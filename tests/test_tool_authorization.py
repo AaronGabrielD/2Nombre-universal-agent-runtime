@@ -4,12 +4,12 @@ from app.approval.service import HumanApprovalEngine
 from app.core.contracts import HumanDecisionType, RiskLevel
 from app.tools import (
     CapabilitySpec,
-    ToolAuthorizationError,
     ToolAuthorizationRequest,
     ToolAuthorizationService,
     ToolRegistration,
     ToolRegistry,
 )
+from app.tools.authorization import ToolAuthorizationError
 
 
 def safe_handler(_payload):
@@ -47,6 +47,36 @@ class ToolAuthorizationTests(unittest.TestCase):
         gate = self.approvals.get_gate(result.gate_id)
         self.assertEqual(gate.kind, "TOOL_RISK")
         self.assertEqual(gate.context["worker_id"], "worker-1")
+
+    def test_repeated_risky_request_reuses_open_gate(self):
+        first = self.service.request_authorization(
+            ToolAuthorizationRequest("run-1", "worker-1", required_tools=("risky",))
+        )
+        second = self.service.request_authorization(
+            ToolAuthorizationRequest("run-1", "worker-1", required_tools=("risky",))
+        )
+        self.assertEqual(first.gate_id, second.gate_id)
+        self.assertEqual(len(self.approvals.list_open_gates(run_id="run-1")), 1)
+
+    def test_resolved_risky_gate_is_reused_without_new_gate(self):
+        result = self.service.request_authorization(
+            ToolAuthorizationRequest("run-1", "worker-1", required_tools=("risky",))
+        )
+        authorization = self.service.resolve_gate(
+            gate_id=result.gate_id,
+            decision=HumanDecisionType.APPROVE,
+            run_id="run-1",
+            worker_id="worker-1",
+            feedback="Approved.",
+        )
+        self.assertTrue(authorization.authorized)
+
+        resumed = self.service.request_authorization(
+            ToolAuthorizationRequest("run-1", "worker-1", required_tools=("risky",))
+        )
+        self.assertEqual(resumed.gate_id, result.gate_id)
+        self.assertTrue(resumed.authorization.authorized)
+        self.assertEqual(len(self.approvals.list_gates(run_id="run-1", kind="TOOL_RISK")), 1)
 
     def test_gate_c_approval_authorizes_execution(self):
         result = self.service.request_authorization(
