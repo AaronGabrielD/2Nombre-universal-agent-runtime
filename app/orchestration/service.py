@@ -10,18 +10,14 @@ from typing import Any
 
 from app.agents.crewai_adapter import CrewAIWorkerAdapter
 from app.approval.models import GateStatus
-from app.core.contracts import ExecutionResult, HumanDecision, HumanDecisionType, to_dict
+from app.core.contracts import ExecutionResult, HumanDecisionType, to_dict
 from app.core.states import WorkflowState
 from app.execution.models import ExecutionAuthorization
 from app.session.manager import SessionManager
 from app.session.models import WorkerOutput
 from app.supervisor.models import QAResult, QAStatus, SupervisorInput
 from app.supervisor.service import SupervisorService
-from app.tools.authorization import (
-    ToolAuthorizationError,
-    ToolAuthorizationRequest,
-    ToolAuthorizationService,
-)
+from app.tools.authorization import ToolAuthorizationRequest, ToolAuthorizationService
 from app.workers.models import DispatchBatch, WorkerInstance
 from app.workers.runtime import WorkerExecutionTask, WorkerRuntimeAdapter, WorkerRuntimeError
 from app.workers.service import WorkerDispatcher, WorkerFactory
@@ -34,10 +30,7 @@ class IntegratedOrchestrationError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class OrchestrationResult:
-    """Evidence produced by one orchestration pass.
-
-    `qa_result` is absent when execution pauses for human Gate C approval.
-    """
+    """Evidence produced by one orchestration pass, optionally paused at Gate C."""
 
     run_id: str
     batches: tuple[DispatchBatch, ...]
@@ -101,17 +94,14 @@ class IntegratedOrchestrator:
             for worker in workers
         )
         batches = self.worker_dispatcher.plan_batches(
-            run_id=run_id,
-            workers=workers,
-            tasks=tasks,
+            run_id=run_id, workers=workers, tasks=tasks
         )
-
         gate_a = self._execution_authorization(run_id)
         all_execution_results: list[ExecutionResult] = []
 
         for batch in batches:
             task_by_worker = {task.worker_id: task for task in batch.tasks}
-            executable: list[tuple[WorkerInstance, Any]] = []
+            executable: list[tuple[WorkerInstance, Any, ExecutionAuthorization]] = []
 
             for worker in batch.workers:
                 existing = self.sessions.snapshot(run_id).worker_outputs.get(worker.worker_id)
@@ -120,14 +110,8 @@ class IntegratedOrchestrator:
 
                 task = task_by_worker.get(worker.worker_id)
                 if task is None:
-                    self.sessions.set_worker_output(
-                        run_id,
-                        WorkerOutput(
-                            worker_id=worker.worker_id,
-                            run_id=run_id,
-                            status="error",
-                            output={"error": "dispatcher produced no task for worker"},
-                        ),
+                    self._set_worker_error(
+                        run_id, worker, "dispatcher produced no task for worker"
                     )
                     continue
 
@@ -138,10 +122,7 @@ class IntegratedOrchestrator:
                         getattr(plan, "required_capabilities", ()) or ()
                     ),
                 )
-                if tool_decision is None:
-                    raise IntegratedOrchestrationError(
-                        "worker requires tool authorization, but no ToolAuthorizationService is configured"
-                    )
+
                 if tool_decision.gate_id is not None and tool_decision.authorization is None:
                     self.sessions.set_worker_output(
                         run_id,
@@ -164,7 +145,7 @@ class IntegratedOrchestrator:
                         role="system",
                         content=(
                             f"Worker {worker.worker_id} is paused pending human Gate C approval "
-                            f"for risky tool access."
+                            "for risky tool access."
                         ),
                         metadata={
                             "phase": "tool_authorization",
@@ -182,10 +163,7 @@ class IntegratedOrchestrator:
                         pending_worker_id=worker.worker_id,
                     )
 
-                worker_authorization = gate_a
-                if tool_decision.authorization is not None and tool_decision.authorization.gate_id:
-                    worker_authorization = tool_decision.authorization
-
+                authorization = tool_decision.authorization or gate_a
                 try:
                     execution_plan = self.worker_agent.build_execution_plan(
                         worker=worker,
@@ -196,19 +174,13 @@ class IntegratedOrchestrator:
                             "acceptance_criteria": list(plan.acceptance_criteria),
                             "authorized_tools": [
                                 tool.tool_id for tool in tool_decision.resolved_tools
-                            ] if tool_decision else [],
+                            ],
                         },
                     )
-                    executable.append((worker, execution_plan, worker_authorization))
-                except (RuntimeError, ValueError, ToolAuthorizationError) as exc:
-                    self.sessions.set_worker_output(
-                        run_id,
-                        WorkerOutput(
-                            worker_id=worker.worker_id,
-                            run_id=run_id,
-                            status="error",
-                            output={"error": f"{type(exc).__name__}: {exc}"},
-                        ),
+                    executable.append((worker, execution_plan, authorization))
+                except (RuntimeError, ValueError) as exc:
+                    self._set_worker_error(
+                        run_id, worker, f"{type(exc).__name__}: {exc}"
                     )
 
             if not executable:
@@ -216,18 +188,9 @@ class IntegratedOrchestrator:
 
             runtime_tasks = tuple(item[1].execution_task for item in executable)
             authorizations = {item[0].worker_id: item[2] for item in executable}
-            if len({item.gate_id for item in authorizations.values()}) == 1:
-                batch_authorization = next(iter(authorizations.values()))
-            elif len(authorizations) == 1:
-                batch_authorization = next(iter(authorizations.values()))
-            else:
-                # Different Gate-C decisions cannot safely be collapsed into one
-                # batch authorization, so execute this batch sequentially through
-                # one-task calls while retaining M18 for uniform authorization.
-                batch_authorization = None
-
+            shared_gate_ids = {authorization.gate_id for authorization in authorizations.values()}
             try:
-                if batch_authorization is not None:
+                if len(shared_gate_ids) == 1:
                     results = self.worker_runtime.execute_batch(
                         batch=DispatchBatch(
                             run_id=batch.run_id,
@@ -236,7 +199,7 @@ class IntegratedOrchestrator:
                             sequence=batch.sequence,
                         ),
                         tasks=runtime_tasks,
-                        authorization=batch_authorization,
+                        authorization=next(iter(authorizations.values())),
                         parallel=len(runtime_tasks) > 1,
                     )
                 else:
@@ -256,34 +219,26 @@ class IntegratedOrchestrator:
                         )
                     results = tuple(collected)
             except (WorkerRuntimeError, RuntimeError, ValueError) as exc:
-                error = {"error": f"{type(exc).__name__}: {exc}"}
+                error = f"{type(exc).__name__}: {exc}"
                 for worker, _execution_plan, _authorization in executable:
-                    self.sessions.set_worker_output(
-                        run_id,
-                        WorkerOutput(
-                            worker_id=worker.worker_id,
-                            run_id=run_id,
-                            status="error",
-                            output=error,
-                        ),
-                    )
+                    self._set_worker_error(run_id, worker, error)
                 continue
 
             all_execution_results.extend(results)
             for (worker, execution_plan, _authorization), result in zip(executable, results):
-                status = "success" if result.status.value == "success" else result.status.value
-                evidence: Any = {
-                    "summary": execution_plan.summary,
-                    "authorized_tools": list(worker.required_tools),
-                    "execution": to_dict(result),
-                }
                 self.sessions.set_worker_output(
                     run_id,
                     WorkerOutput(
                         worker_id=worker.worker_id,
                         run_id=run_id,
-                        status=status,
-                        output=evidence,
+                        status=(
+                            "success" if result.status.value == "success" else result.status.value
+                        ),
+                        output={
+                            "summary": execution_plan.summary,
+                            "authorized_tools": list(worker.required_tools),
+                            "execution": to_dict(result),
+                        },
                     ),
                 )
 
@@ -362,14 +317,11 @@ class IntegratedOrchestrator:
         )
         if not authorization.authorized:
             self.sessions.transition(run_id, WorkflowState.REVISION)
-            snapshot = self.sessions.snapshot(run_id)
             return OrchestrationResult(
                 run_id=run_id,
                 batches=(),
                 execution_results=(),
                 qa_result=None,
-                pending_gate_id=None,
-                pending_worker_id=None,
             )
 
         self.sessions.transition(run_id, WorkflowState.EXECUTING)
@@ -389,7 +341,9 @@ class IntegratedOrchestrator:
                 authorization = None
             return _NoTools()
         if self.tool_authorization is None:
-            return None
+            raise IntegratedOrchestrationError(
+                "worker requires tool authorization, but no ToolAuthorizationService is configured"
+            )
         return self.tool_authorization.request_authorization(
             ToolAuthorizationRequest(
                 run_id=run_id,
@@ -397,6 +351,17 @@ class IntegratedOrchestrator:
                 required_tools=worker.required_tools,
                 required_capabilities=required_capabilities,
             )
+        )
+
+    def _set_worker_error(self, run_id: str, worker: WorkerInstance, error: str) -> None:
+        self.sessions.set_worker_output(
+            run_id,
+            WorkerOutput(
+                worker_id=worker.worker_id,
+                run_id=run_id,
+                status="error",
+                output={"error": error},
+            ),
         )
 
     def _execution_authorization(self, run_id: str) -> ExecutionAuthorization:
