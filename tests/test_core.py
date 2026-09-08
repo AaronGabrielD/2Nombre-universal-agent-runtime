@@ -1,12 +1,16 @@
+import json
+import os
 import unittest
 
+from app.core.config import get_settings
 from app.core.contracts import (
     ArchitecturePlan,
     ExecutionRequest,
     ExecutionStatus,
+    RiskLevel,
     ToolSpec,
     WorkerSpec,
-    RiskLevel,
+    to_dict,
 )
 from app.core.exceptions import ContractValidationError, IllegalStateTransition
 from app.core.models import RunContext
@@ -75,6 +79,25 @@ class ContractTests(unittest.TestCase):
         )
         with self.assertRaises(ContractValidationError):
             tool.validate()
+
+    def test_configuration_hides_secrets_from_repr(self):
+        previous = os.environ.get("GEMINI_API_KEY")
+        os.environ["GEMINI_API_KEY"] = "super-secret-test-key"
+        try:
+            settings = get_settings(reload=True)
+            self.assertNotIn("super-secret-test-key", repr(settings))
+        finally:
+            if previous is None:
+                os.environ.pop("GEMINI_API_KEY", None)
+            else:
+                os.environ["GEMINI_API_KEY"] = previous
+            get_settings(reload=True)
+
+    def test_contract_serialization_is_json_friendly(self):
+        request = ExecutionRequest("e1", "r1", "w1", "python", "print(1)")
+        payload = to_dict(request)
+        self.assertEqual(payload["execution_id"], "e1")
+        json.dumps(payload)
 
     def test_execution_status_values_are_stable(self):
         self.assertEqual(ExecutionStatus.SUCCESS.value, "success")
