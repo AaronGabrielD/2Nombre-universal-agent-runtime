@@ -15,7 +15,11 @@ Universal multi-agent runtime under active construction.
 - **M08 — Execution Gateway:** ✅
 - **M09 — Supervisor & QA:** ✅
 - **M10 — Runtime Coordinator:** ✅
-- **M11 — Chainlit Presentation:** 🚧
+- **M11 — Chainlit Presentation:** ✅
+- **M12 — Colab Execution Service:** ✅
+- **M13 — Worker Runtime Adapter:** ✅
+- **M14 — CrewAI Worker Adapter:** ✅
+- **M15 — Integrated Orchestrator:** ✅
 
 ## Architecture
 
@@ -29,9 +33,27 @@ See `docs/architecture/M10_RUNTIME_COORDINATOR.md`.
 
 ## Presentation
 
-M11 adds the first Chainlit interface for intake, architecture display, and human Gate A interaction. It deliberately does not execute workers or tools from the UI layer.
+M11 adds the Chainlit interface for intake, architecture display, and human Gate A interaction. It deliberately does not execute workers or tools from the UI layer.
 
 See `docs/architecture/M11_CHAINLIT_PRESENTATION.md`.
+
+## CrewAI integration
+
+M14 adds an optional CrewAI adapter. CrewAI generates worker execution plans, but M13/M08 remain the exclusive execution path and M05 remains authoritative for human approval.
+
+Install the optional integration with:
+
+```bash
+pip install -r requirements-crewai.txt
+```
+
+See `docs/architecture/M14_CREWAI_ADAPTER.md`.
+
+## Integrated execution
+
+M15 connects approved architecture to worker dispatch, provider-generated worker plans, the execution gateway, session evidence, and deterministic QA. A QA PASS opens Gate D; it does not complete the run.
+
+See `docs/architecture/M15_INTEGRATED_ORCHESTRATOR.md`.
 
 ## Security rule
 
