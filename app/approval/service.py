@@ -1,6 +1,7 @@
 """UI-neutral human approval gate service."""
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import replace
 from datetime import datetime, timezone
 from threading import RLock
@@ -48,7 +49,7 @@ class HumanApprovalEngine:
             kind=kind,
             title=title,
             prompt=prompt,
-            context=dict(context or {}),
+            context=deepcopy(context or {}),
             allowed_decisions=allowed_decisions or (
                 HumanDecisionType.APPROVE,
                 HumanDecisionType.MODIFY,
@@ -63,7 +64,7 @@ class HumanApprovalEngine:
                 raise ApprovalError(f"gate {gate.gate_id} already exists")
             self._gates[gate.gate_id] = gate
             self._decisions[gate.gate_id] = ()
-        return gate
+        return _copy_gate(gate)
 
     def get_gate(self, gate_id: str) -> ApprovalGate:
         with self._lock:
@@ -152,4 +153,4 @@ def _utc_now() -> str:
 
 
 def _copy_gate(gate: ApprovalGate) -> ApprovalGate:
-    return replace(gate, context=dict(gate.context))
+    return replace(gate, context=deepcopy(gate.context))
