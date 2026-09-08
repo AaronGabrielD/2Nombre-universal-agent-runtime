@@ -6,14 +6,13 @@ an explicit human Gate C decision. It never invokes tool handlers itself.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable
 
 from app.approval.service import HumanApprovalEngine
 from app.core.contracts import HumanDecisionType, RiskLevel
 from app.execution.models import ExecutionAuthorization
 
 from .models import RegistryValidation, ToolRegistration
-from .service import ToolRegistry, ToolRegistryError
+from .service import ToolRegistry
 
 
 class ToolAuthorizationError(RuntimeError):
@@ -106,14 +105,28 @@ class ToolAuthorizationService:
             gate_id=gate.gate_id,
         )
 
-    def resolve_gate(self, *, gate_id: str, decision: HumanDecisionType, run_id: str, worker_id: str, feedback: str) -> ExecutionAuthorization:
+    def resolve_gate(
+        self,
+        *,
+        gate_id: str,
+        decision: HumanDecisionType,
+        run_id: str,
+        worker_id: str,
+        feedback: str,
+        actor: str = "human",
+    ) -> ExecutionAuthorization:
         gate = self.approvals.get_gate(gate_id)
         if gate.run_id != run_id or gate.kind != "TOOL_RISK":
             raise ToolAuthorizationError("gate does not belong to this tool authorization request")
+        gated_worker = gate.context.get("worker_id")
+        if gated_worker != worker_id:
+            raise ToolAuthorizationError("gate does not belong to this worker")
+
         recorded = self.approvals.resolve_gate(
             gate_id=gate_id,
             decision=decision,
             feedback=feedback,
+            actor=actor,
         )
         if recorded.run_id != run_id:
             raise ToolAuthorizationError("decision/run ownership mismatch")
