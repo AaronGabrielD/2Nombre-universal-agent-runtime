@@ -13,11 +13,18 @@ Universal multi-agent runtime under active construction.
 - **M06 — Worker Factory & Dispatcher:** ✅
 - **M07 — Tool Registry & Capability Registry:** ✅
 - **M08 — Execution Gateway:** ✅
-- **M09 — Supervisor & QA:** 🚧
+- **M09 — Supervisor & QA:** ✅
+- **M10 — Runtime Coordinator:** 🚧
 
 ## Architecture
 
 See `BLUEPRINT_MASTER_v1.md` for the master architecture and `docs/architecture/` for milestone boundaries.
+
+## Runtime coordination
+
+M10 connects the existing lifecycle services while preserving their boundaries. It enforces the human approval checkpoints required before execution and completion.
+
+See `docs/architecture/M10_RUNTIME_COORDINATOR.md`.
 
 ## Security rule
 
