@@ -173,8 +173,6 @@ class ColabCodeExecutor:
         request = self._validate_request(payload)
         started = monotonic()
         execution_id = request["execution_id"]
-        run_id = request["run_id"]
-        worker_id = request["worker_id"]
         timeout = request["timeout_seconds"]
         needs_network = request["needs_network"]
 
@@ -232,7 +230,8 @@ class ColabCodeExecutor:
                     duration_ms=_duration_ms(started),
                 )
 
-        artifacts = self._collect_artifacts(workdir, execution_root, execution_id)
+            artifacts = self._collect_artifacts(workdir, execution_root, execution_id)
+
         stdout = _bounded_text(completed.stdout, self.config.max_output_bytes)
         stderr = _bounded_text(completed.stderr, self.config.max_output_bytes)
         status = "success" if completed.returncode == 0 else "error"
@@ -259,7 +258,6 @@ class ColabCodeExecutor:
         if not _safe_identifier(payload["worker_id"]):
             raise ColabExecutionServiceError("invalid worker_id")
         language = payload["language"].strip().lower()
-        code = payload["code"]
         timeout = payload.get("timeout_seconds", self.config.default_timeout_seconds)
         if not isinstance(timeout, int) or isinstance(timeout, bool):
             raise ColabExecutionServiceError("timeout_seconds must be an integer")
@@ -278,7 +276,7 @@ class ColabCodeExecutor:
             "run_id": payload["run_id"].strip(),
             "worker_id": payload["worker_id"].strip(),
             "language": language,
-            "code": code,
+            "code": payload["code"],
             "timeout_seconds": timeout,
             "needs_network": needs_network,
             "environment": environment,
