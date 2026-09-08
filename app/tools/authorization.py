@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from app.approval.models import GateStatus
 from app.approval.service import HumanApprovalEngine
 from app.core.contracts import HumanDecisionType, RiskLevel
 from app.execution.models import ExecutionAuthorization
@@ -84,6 +85,40 @@ class ToolAuthorizationService:
                 ),
             )
 
+        matching = self._find_matching_gate(request=request, risky=risky)
+        if matching is not None:
+            if matching.status == GateStatus.OPEN:
+                return ToolAuthorizationDecision(
+                    run_id=request.run_id,
+                    worker_id=request.worker_id,
+                    validation=validation,
+                    resolved_tools=resolved,
+                    gate_id=matching.gate_id,
+                )
+            if matching.status == GateStatus.RESOLVED:
+                recorded = self.approvals.get_decision(matching.gate_id)
+                if recorded is None:
+                    raise ToolAuthorizationError(
+                        f"resolved Gate C {matching.gate_id} has no recorded decision"
+                    )
+                approved = recorded.decision == HumanDecisionType.APPROVE
+                return ToolAuthorizationDecision(
+                    run_id=request.run_id,
+                    worker_id=request.worker_id,
+                    validation=validation,
+                    resolved_tools=resolved,
+                    gate_id=matching.gate_id,
+                    authorization=ExecutionAuthorization(
+                        authorized=approved,
+                        reason=(
+                            "human approved risky tool execution"
+                            if approved
+                            else "human rejected risky tool execution"
+                        ),
+                        gate_id=matching.gate_id,
+                    ),
+                )
+
         gate = self.approvals.request_gate(
             run_id=request.run_id,
             kind="TOOL_RISK",
@@ -141,3 +176,22 @@ class ToolAuthorizationService:
             reason="human approved risky tool execution",
             gate_id=gate_id,
         )
+
+    def _find_matching_gate(
+        self,
+        *,
+        request: ToolAuthorizationRequest,
+        risky: tuple[ToolRegistration, ...],
+    ):
+        required_tool_ids = tuple(sorted(tool.tool_id for tool in risky))
+        required_capabilities = tuple(sorted(request.required_capabilities))
+        for gate in reversed(self.approvals.list_gates(run_id=request.run_id, kind="TOOL_RISK")):
+            context = gate.context
+            if context.get("worker_id") != request.worker_id:
+                continue
+            if tuple(sorted(context.get("tools", ()))) != required_tool_ids:
+                continue
+            if tuple(sorted(context.get("required_capabilities", ()))) != required_capabilities:
+                continue
+            return gate
+        return None
