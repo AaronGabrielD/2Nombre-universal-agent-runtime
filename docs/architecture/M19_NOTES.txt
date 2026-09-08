@@ -1,0 +1,1 @@
+M19 implementation is complete on this branch: M07/M16 tool authorization is integrated into M15 with Gate C pause/resume and idempotent approval lookup.
