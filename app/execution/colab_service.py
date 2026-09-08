@@ -1,0 +1,422 @@
+"""HTTP execution service intended to run inside a Google Colab runtime.
+
+This is the remote counterpart of ``ColabExecutionBackend``. It deliberately
+uses only the Python standard library. It authenticates requests, executes
+Python without a shell, enforces a timeout, captures bounded output, and exposes
+stored artifacts through a read endpoint.
+
+Important: a normal Colab VM is not a security sandbox. ``needs_network`` is an
+admission-policy flag, not a mechanism that disables network access inside the
+Python process.
+"""
+from __future__ import annotations
+
+import json
+import os
+from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from time import monotonic
+from typing import Any
+from urllib.parse import quote, unquote, urlparse
+import secrets
+import shutil
+import subprocess
+import sys
+import uuid
+
+
+class ColabExecutionServiceError(ValueError):
+    """Raised for invalid execution-service configuration or requests."""
+
+
+class ExecutionServiceConfig:
+    """Configuration read from environment variables at process startup."""
+
+    def __init__(self) -> None:
+        self.bind_host = os.getenv("RUNTIME_BIND_HOST", "0.0.0.0")
+        self.port = _int_env("RUNTIME_PORT", 8000, minimum=1, maximum=65535)
+        self.token = os.getenv("RUNTIME_EXECUTION_TOKEN", "").strip()
+        self.artifact_root = Path(
+            os.getenv("RUNTIME_ARTIFACT_ROOT", "/content/universal-agent-runtime-artifacts")
+        ).resolve()
+        self.max_request_bytes = _int_env("RUNTIME_MAX_REQUEST_BYTES", 2 * 1024 * 1024, minimum=1024)
+        self.max_output_bytes = _int_env("RUNTIME_MAX_OUTPUT_BYTES", 256 * 1024, minimum=1024)
+        self.max_artifact_bytes = _int_env("RUNTIME_MAX_ARTIFACT_BYTES", 10 * 1024 * 1024, minimum=1024)
+        self.max_artifacts = _int_env("RUNTIME_MAX_ARTIFACTS", 20, minimum=1, maximum=100)
+        self.default_timeout_seconds = _int_env("RUNTIME_DEFAULT_TIMEOUT_SECONDS", 60, minimum=1, maximum=3600)
+        self.max_timeout_seconds = _int_env("RUNTIME_MAX_TIMEOUT_SECONDS", 600, minimum=1, maximum=3600)
+        self.allow_network_requests = _bool_env("RUNTIME_ALLOW_NETWORK", False)
+        self.public_base_url = os.getenv("RUNTIME_PUBLIC_BASE_URL", "").strip().rstrip("/")
+        if not self.token:
+            raise ColabExecutionServiceError("RUNTIME_EXECUTION_TOKEN must be configured")
+        self.artifact_root.mkdir(parents=True, exist_ok=True)
+
+
+class ColabExecutionRequestHandler(BaseHTTPRequestHandler):
+    """Small JSON API for one remote execution backend."""
+
+    server_version = "UniversalAgentRuntime-Colab/1.0"
+
+    @property
+    def config(self) -> ExecutionServiceConfig:
+        return self.server.runtime_config  # type: ignore[attr-defined]
+
+    def do_GET(self) -> None:  # noqa: N802 - stdlib handler API
+        path = urlparse(self.path).path
+        if path == "/health":
+            self._send_json(HTTPStatus.OK, {"status": "ok", "backend": "colab-service"})
+            return
+        if path.startswith("/artifacts/"):
+            self._serve_artifact(path)
+            return
+        self._send_json(HTTPStatus.NOT_FOUND, {"error": "not_found"})
+
+    def do_POST(self) -> None:  # noqa: N802 - stdlib handler API
+        path = urlparse(self.path).path
+        if path != "/execute":
+            self._send_json(HTTPStatus.NOT_FOUND, {"error": "not_found"})
+            return
+        if not self._authorized():
+            self._send_json(HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
+            return
+
+        try:
+            payload = self._read_json()
+            response = self.server.executor.execute(payload)  # type: ignore[attr-defined]
+        except ColabExecutionServiceError as exc:
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+            return
+        except Exception as exc:  # defensive HTTP boundary
+            self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": f"internal error: {exc}"})
+            return
+
+        self._send_json(HTTPStatus.OK, response)
+
+    def log_message(self, fmt: str, *args: object) -> None:
+        """Avoid leaking request bodies or credentials into stdout."""
+        print(f"[colab-service] {self.address_string()} - {fmt % args}")
+
+    def _authorized(self) -> bool:
+        header = self.headers.get("Authorization", "")
+        scheme, _, supplied = header.partition(" ")
+        if scheme.lower() != "bearer" or not supplied:
+            return False
+        return secrets.compare_digest(supplied.strip(), self.config.token)
+
+    def _read_json(self) -> dict[str, Any]:
+        content_length = self.headers.get("Content-Length")
+        if content_length is None:
+            raise ColabExecutionServiceError("Content-Length is required")
+        try:
+            size = int(content_length)
+        except ValueError as exc:
+            raise ColabExecutionServiceError("invalid Content-Length") from exc
+        if size < 0 or size > self.config.max_request_bytes:
+            raise ColabExecutionServiceError("request body exceeds configured limit")
+        raw = self.rfile.read(size)
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ColabExecutionServiceError("request body must be UTF-8 JSON") from exc
+        if not isinstance(payload, dict):
+            raise ColabExecutionServiceError("request JSON must be an object")
+        return payload
+
+    def _serve_artifact(self, path: str) -> None:
+        if not self._authorized():
+            self._send_json(HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
+            return
+        parts = [unquote(part) for part in path.split("/") if part]
+        if len(parts) < 3 or parts[0] != "artifacts":
+            self._send_json(HTTPStatus.NOT_FOUND, {"error": "not_found"})
+            return
+        execution_id = parts[1]
+        relative = Path(*parts[2:])
+        if not _safe_identifier(execution_id) or relative.is_absolute() or ".." in relative.parts:
+            self._send_json(HTTPStatus.NOT_FOUND, {"error": "not_found"})
+            return
+        root = self.config.artifact_root / execution_id
+        target = (root / relative).resolve()
+        try:
+            target.relative_to(root.resolve())
+        except ValueError:
+            self._send_json(HTTPStatus.NOT_FOUND, {"error": "not_found"})
+            return
+        if not target.is_file():
+            self._send_json(HTTPStatus.NOT_FOUND, {"error": "not_found"})
+            return
+        data = target.read_bytes()
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _send_json(self, status: HTTPStatus, payload: dict[str, Any]) -> None:
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+
+class ColabCodeExecutor:
+    """Translate validated execution requests into local subprocesses."""
+
+    def __init__(self, config: ExecutionServiceConfig) -> None:
+        self.config = config
+
+    def execute(self, payload: dict[str, Any]) -> dict[str, Any]:
+        request = self._validate_request(payload)
+        started = monotonic()
+        execution_id = request["execution_id"]
+        timeout = request["timeout_seconds"]
+        needs_network = request["needs_network"]
+
+        if needs_network and not self.config.allow_network_requests:
+            return self._result(
+                execution_id=execution_id,
+                status="denied",
+                stdout="",
+                stderr="network execution is disabled by service policy",
+                exit_code=None,
+                duration_ms=_duration_ms(started),
+            )
+
+        if request["language"] != "python":
+            return self._result(
+                execution_id=execution_id,
+                status="unavailable",
+                stdout="",
+                stderr=f"unsupported language: {request['language']}",
+                exit_code=None,
+                duration_ms=_duration_ms(started),
+            )
+
+        execution_root = (self.config.artifact_root / execution_id).resolve()
+        execution_root.mkdir(parents=True, exist_ok=True)
+        with TemporaryDirectory(prefix=f"uar-{execution_id[:12]}-", dir="/tmp") as tmp:
+            workdir = Path(tmp).resolve()
+            script = workdir / "main.py"
+            script.write_text(request["code"], encoding="utf-8")
+            environment = _execution_environment(request["environment"], workdir)
+            try:
+                completed = subprocess.run(
+                    [sys.executable, str(script)],
+                    cwd=str(workdir),
+                    env=environment,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    shell=False,
+                    timeout=timeout,
+                    check=False,
+                )
+            except subprocess.TimeoutExpired as exc:
+                stdout = _bounded_text(exc.stdout or "", self.config.max_output_bytes)
+                stderr = _bounded_text(exc.stderr or "", self.config.max_output_bytes)
+                return self._result(
+                    execution_id=execution_id,
+                    status="timeout",
+                    stdout=stdout,
+                    stderr=stderr or f"execution exceeded {timeout} seconds",
+                    exit_code=None,
+                    duration_ms=_duration_ms(started),
+                )
+
+            artifacts = self._collect_artifacts(workdir, execution_root, execution_id)
+
+        stdout = _bounded_text(completed.stdout, self.config.max_output_bytes)
+        stderr = _bounded_text(completed.stderr, self.config.max_output_bytes)
+        status = "success" if completed.returncode == 0 else "error"
+        return self._result(
+            execution_id=execution_id,
+            status=status,
+            stdout=stdout,
+            stderr=stderr,
+            exit_code=completed.returncode,
+            duration_ms=_duration_ms(started),
+            artifacts=artifacts,
+        )
+
+    def _validate_request(self, payload: dict[str, Any]) -> dict[str, Any]:
+        required = ("execution_id", "run_id", "worker_id", "language", "code")
+        for key in required:
+            value = payload.get(key)
+            if not isinstance(value, str) or not value.strip():
+                raise ColabExecutionServiceError(f"{key} must be a non-empty string")
+        if not _safe_identifier(payload["execution_id"]):
+            raise ColabExecutionServiceError("invalid execution_id")
+        if not _safe_identifier(payload["run_id"]):
+            raise ColabExecutionServiceError("invalid run_id")
+        if not _safe_identifier(payload["worker_id"]):
+            raise ColabExecutionServiceError("invalid worker_id")
+        language = payload["language"].strip().lower()
+        timeout = payload.get("timeout_seconds", self.config.default_timeout_seconds)
+        if not isinstance(timeout, int) or isinstance(timeout, bool):
+            raise ColabExecutionServiceError("timeout_seconds must be an integer")
+        if not 1 <= timeout <= self.config.max_timeout_seconds:
+            raise ColabExecutionServiceError("timeout_seconds is outside the configured range")
+        needs_network = payload.get("needs_network", False)
+        if not isinstance(needs_network, bool):
+            raise ColabExecutionServiceError("needs_network must be boolean")
+        environment = payload.get("environment", {})
+        if not isinstance(environment, dict) or not all(
+            isinstance(k, str) and isinstance(v, str) for k, v in environment.items()
+        ):
+            raise ColabExecutionServiceError("environment must be a string-to-string object")
+        return {
+            "execution_id": payload["execution_id"].strip(),
+            "run_id": payload["run_id"].strip(),
+            "worker_id": payload["worker_id"].strip(),
+            "language": language,
+            "code": payload["code"],
+            "timeout_seconds": timeout,
+            "needs_network": needs_network,
+            "environment": environment,
+        }
+
+    def _collect_artifacts(self, workdir: Path, execution_root: Path, execution_id: str) -> list[dict[str, Any]]:
+        collected: list[dict[str, Any]] = []
+        for path in sorted(workdir.rglob("*")):
+            if not path.is_file():
+                continue
+            relative = path.relative_to(workdir)
+            if relative == Path("main.py"):
+                continue
+            size = path.stat().st_size
+            if size > self.config.max_artifact_bytes:
+                continue
+            if len(collected) >= self.config.max_artifacts:
+                break
+            destination = (execution_root / relative).resolve()
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, destination)
+            uri = self._artifact_uri(execution_id, relative)
+            collected.append(
+                {
+                    "artifact_id": f"artifact-{uuid.uuid4().hex}",
+                    "name": relative.as_posix(),
+                    "mime_type": None,
+                    "uri": uri,
+                }
+            )
+        return collected
+
+    def _artifact_uri(self, execution_id: str, relative: Path) -> str:
+        encoded = "/".join(quote(part, safe="") for part in relative.parts)
+        if self.config.public_base_url:
+            return f"{self.config.public_base_url}/artifacts/{quote(execution_id, safe='')}/{encoded}"
+        return f"artifact://{execution_id}/{encoded}"
+
+    @staticmethod
+    def _result(
+        *,
+        execution_id: str,
+        status: str,
+        stdout: str,
+        stderr: str,
+        exit_code: int | None,
+        duration_ms: int,
+        artifacts: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "execution_id": execution_id,
+            "status": status,
+            "stdout": stdout,
+            "stderr": stderr,
+            "exit_code": exit_code,
+            "duration_ms": duration_ms,
+            "artifacts": artifacts or [],
+            "backend": "colab-service",
+        }
+
+
+class RuntimeColabHTTPServer(ThreadingHTTPServer):
+    """HTTP server carrying runtime configuration and executor state."""
+
+    daemon_threads = True
+
+    def __init__(self, address: tuple[str, int], config: ExecutionServiceConfig) -> None:
+        super().__init__(address, ColabExecutionRequestHandler)
+        self.runtime_config = config
+        self.executor = ColabCodeExecutor(config)
+
+
+def serve_forever(config: ExecutionServiceConfig | None = None) -> None:
+    """Start the authenticated execution service until interrupted."""
+    runtime_config = config or ExecutionServiceConfig()
+    server = RuntimeColabHTTPServer((runtime_config.bind_host, runtime_config.port), runtime_config)
+    print(f"Universal Agent Runtime Colab service listening on {runtime_config.bind_host}:{runtime_config.port}")
+    try:
+        server.serve_forever()
+    finally:
+        server.server_close()
+
+
+def _execution_environment(requested: dict[str, str], workdir: Path) -> dict[str, str]:
+    allowed_base = {key: os.environ[key] for key in ("PATH", "LANG", "LC_ALL") if key in os.environ}
+    allowed_base.update({"HOME": str(workdir), "TMPDIR": str(workdir), "PYTHONUNBUFFERED": "1"})
+    for key, value in requested.items():
+        if _safe_environment_key(key):
+            allowed_base[key] = value
+    return allowed_base
+
+
+def _safe_environment_key(value: str) -> bool:
+    upper = value.upper()
+    if not value or not value.replace("_", "A").isalnum() or value[0].isdigit():
+        return False
+    return not any(marker in upper for marker in ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "PRIVATE"))
+
+
+def _bounded_text(value: str | bytes, limit: int) -> str:
+    text = value.decode("utf-8", errors="replace") if isinstance(value, bytes) else str(value)
+    if len(text.encode("utf-8")) <= limit:
+        return text
+    suffix = "\n[output truncated by execution service]"
+    raw = text.encode("utf-8")[: max(0, limit - len(suffix.encode("utf-8")))]
+    return raw.decode("utf-8", errors="ignore") + suffix
+
+
+def _duration_ms(started: float) -> int:
+    return max(0, int((monotonic() - started) * 1000))
+
+
+def _safe_identifier(value: str) -> bool:
+    return bool(value) and len(value) <= 128 and all(char.isalnum() or char in "-_." for char in value)
+
+
+def _int_env(name: str, default: int, *, minimum: int, maximum: int | None = None) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ColabExecutionServiceError(f"{name} must be an integer") from exc
+    if value < minimum or (maximum is not None and value > maximum):
+        raise ColabExecutionServiceError(f"{name} is outside the configured range")
+    return value
+
+
+def _bool_env(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    value = raw.strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    raise ColabExecutionServiceError(f"{name} must be a boolean")
+
+
+if __name__ == "__main__":
+    serve_forever()
