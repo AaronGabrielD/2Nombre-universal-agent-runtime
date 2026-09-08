@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .exceptions import RuntimeConfigurationError
 
@@ -24,7 +24,7 @@ def _float_env(name: str, default: float) -> float:
         return float(raw)
     except ValueError as exc:
         raise RuntimeConfigurationError(f"{name} must be a number") from exc
-
+    
 
 @dataclass(frozen=True, slots=True)
 class Settings:
@@ -34,7 +34,7 @@ class Settings:
     included in repr/logging helpers.
     """
 
-    gemini_api_key: str | None
+    gemini_api_key: str | None = field(repr=False)
     gemini_model_architect: str
     gemini_model_worker: str
     gemini_model_supervisor: str
@@ -46,7 +46,7 @@ class Settings:
     max_upload_size_mb: int
     execution_backend: str
     execution_gateway_url: str | None
-    execution_gateway_token: str | None
+    execution_gateway_token: str | None = field(repr=False)
 
     def validate(self) -> None:
         if not 0.0 <= self.gemini_temperature <= 2.0:
