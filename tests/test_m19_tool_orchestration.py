@@ -9,8 +9,6 @@ from app.core.contracts import (
     ExecutionStatus,
     HumanDecisionType,
     RiskLevel,
-    TaskSpec,
-    ToolRegistration,
     WorkerSpec,
 )
 from app.core.states import WorkflowState
@@ -19,8 +17,8 @@ from app.intake.service import IntakeService
 from app.orchestration.service import IntegratedOrchestrator
 from app.runtime.service import RuntimeCoordinator
 from app.session.manager import SessionManager
-from app.tools.authorization import ToolAuthorizationService, ToolAuthorizationError
-from app.tools.models import CapabilitySpec
+from app.tools.authorization import ToolAuthorizationError, ToolAuthorizationService
+from app.tools.models import CapabilitySpec, ToolRegistration
 from app.tools.service import ToolRegistry
 from app.workers.runtime import WorkerExecutionTask, WorkerRuntimeAdapter
 
@@ -209,8 +207,6 @@ class M19ToolOrchestrationTests(unittest.TestCase):
     def test_unknown_tool_fails_closed(self):
         orchestrator, sessions, run_id, _approvals = make_risky_orchestrator()
         plan = sessions.snapshot(run_id).architecture_plan
-        plan.workers = tuple() if False else plan.workers
-        # Replace the plan with a structurally equivalent plan requiring an unknown tool.
         replacement = ArchitecturePlan(
             plan_id=plan.plan_id,
             objective=plan.objective,
