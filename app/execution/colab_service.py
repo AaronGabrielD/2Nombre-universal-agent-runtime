@@ -288,6 +288,8 @@ class ColabCodeExecutor:
             if not path.is_file():
                 continue
             relative = path.relative_to(workdir)
+            if relative == Path("main.py"):
+                continue
             size = path.stat().st_size
             if size > self.config.max_artifact_bytes:
                 continue
