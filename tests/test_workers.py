@@ -47,13 +47,13 @@ class WorkerTests(unittest.TestCase):
         self.assertTrue(all(item.run_id == "run-1" for item in workers))
 
     def test_dispatches_independent_workers_in_parallel_batch(self):
-        workers = tuple(
-            WorkerFactory(settings()).create_workers(
-                run_id="run", plan=ArchitecturePlan(plan_id="p", objective="x", workers=(worker("a"), worker("b")))
-            )
+        workers = WorkerFactory(settings()).create_workers(
+            run_id="run",
+            plan=ArchitecturePlan(
+                plan_id="p", objective="x", workers=(worker("a"), worker("b"))
+            ),
         )
-        dispatcher = WorkerDispatcher(settings())
-        batches = dispatcher.plan_batches(run_id="run", workers=workers)
+        batches = WorkerDispatcher(settings()).plan_batches(run_id="run", workers=workers)
         self.assertEqual(len(batches), 1)
         self.assertEqual(batches[0].worker_ids(), ("a", "b"))
 
@@ -76,13 +76,11 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(batches[1].tasks[0].task_id, "task-b")
 
     def test_rejects_cycle(self):
-        workers = (
-            WorkerFactory(settings()).create_workers(
-                run_id="run",
-                plan=ArchitecturePlan(
-                    plan_id="p", objective="x", workers=(worker("a", ("b",)), worker("b", ("a",)))
-                ),
-            )
+        workers = WorkerFactory(settings()).create_workers(
+            run_id="run",
+            plan=ArchitecturePlan(
+                plan_id="p", objective="x", workers=(worker("a", ("b",)), worker("b", ("a",)))
+            ),
         )
         with self.assertRaises(WorkerDispatchError):
             WorkerDispatcher(settings()).plan_batches(run_id="run", workers=workers)
@@ -110,7 +108,7 @@ class WorkerTests(unittest.TestCase):
             objective="x",
             workers=tuple(worker(str(index)) for index in range(5)),
         )
-        with self.assertRaises(Exception):
+        with self.assertRaises(WorkerDispatchError):
             WorkerFactory(settings(max_workers=4)).create_workers(run_id="run", plan=plan)
 
 
