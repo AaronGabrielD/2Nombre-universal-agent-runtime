@@ -1,1 +1,2 @@
 google-genai>=2.0.0,<3.0.0
+chainlit==2.12.0

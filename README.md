@@ -14,7 +14,8 @@ Universal multi-agent runtime under active construction.
 - **M07 — Tool Registry & Capability Registry:** ✅
 - **M08 — Execution Gateway:** ✅
 - **M09 — Supervisor & QA:** ✅
-- **M10 — Runtime Coordinator:** 🚧
+- **M10 — Runtime Coordinator:** ✅
+- **M11 — Chainlit Presentation:** 🚧
 
 ## Architecture
 
@@ -25,6 +26,12 @@ See `BLUEPRINT_MASTER_v1.md` for the master architecture and `docs/architecture/
 M10 connects the existing lifecycle services while preserving their boundaries. It enforces the human approval checkpoints required before execution and completion.
 
 See `docs/architecture/M10_RUNTIME_COORDINATOR.md`.
+
+## Presentation
+
+M11 adds the first Chainlit interface for intake, architecture display, and human Gate A interaction. It deliberately does not execute workers or tools from the UI layer.
+
+See `docs/architecture/M11_CHAINLIT_PRESENTATION.md`.
 
 ## Security rule
 
