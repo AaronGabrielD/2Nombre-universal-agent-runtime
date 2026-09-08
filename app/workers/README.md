@@ -1,0 +1,1 @@
+M06 worker module: WorkerFactory creates run-scoped worker instances from ArchitecturePlan; WorkerDispatcher computes dependency-safe dispatch batches and never executes work.
