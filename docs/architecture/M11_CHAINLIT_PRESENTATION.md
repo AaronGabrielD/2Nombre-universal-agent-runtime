@@ -2,7 +2,7 @@
 
 ## Scope
 
-M11 adds the first human-facing presentation adapter. It uses Chainlit 2.12.0, the current PyPI release at the time of implementation. Chainlit provides lifecycle hooks, clickable Actions, user-session state, and spontaneous file uploads. citeturn968834search0turn945115search5turn945115search13turn853381search9
+M11 adds the first human-facing presentation adapter. It uses Chainlit 2.12.0, the current PyPI release at the time of implementation. Chainlit provides lifecycle hooks, clickable Actions, user-session state, and spontaneous file uploads.
 
 ## Responsibilities
 
@@ -41,7 +41,7 @@ The later execution/worker/supervisor stages remain intentionally incomplete unt
 
 ## File uploads
 
-Chainlit's spontaneous file upload feature is enabled with a 50 MB UI limit in `config.toml`. M02 remains authoritative for its own configured upload limits and ingestion strategy; the UI limit is not a substitute for backend validation. Chainlit exposes uploaded message elements to `on_message`. citeturn853381search9turn853381search10
+Chainlit's spontaneous file upload feature is enabled with a 50 MB UI limit in `config.toml`. M02 remains authoritative for its own configured upload limits and ingestion strategy; the UI limit is not a substitute for backend validation. Chainlit exposes uploaded message elements to `on_message`.
 
 ## HTML safety
 
@@ -49,7 +49,7 @@ Chainlit's spontaneous file upload feature is enabled with a 50 MB UI limit in `
 
 ## Authentication
 
-Chainlit applications are public by default unless authentication is configured. The current PoC does not invent or commit credentials. A production/private deployment must configure `CHAINLIT_AUTH_SECRET` and an authentication callback before exposing the UI publicly. citeturn945115search7
+Chainlit applications are public by default unless authentication is configured. The current PoC does not invent or commit credentials. A production/private deployment must configure `CHAINLIT_AUTH_SECRET` and an authentication callback before exposing the UI publicly.
 
 ## Local launch
 
@@ -58,4 +58,3 @@ pip install -r requirements.txt
 chainlit run app/ui/chainlit_app.py
 ```
 
-Chainlit documents `chainlit run <app>.py` as the standard launch path. citeturn945115search5turn764536search5
