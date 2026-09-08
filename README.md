@@ -10,7 +10,8 @@ Universal multi-agent runtime under active construction.
 - **M03 — Gemini Adapter:** ✅
 - **M04 — Universal Architect:** ✅
 - **M05 — Human Approval Engine:** ✅
-- **M06 — Worker Factory & Dispatcher:** 🚧
+- **M06 — Worker Factory & Dispatcher:** ✅
+- **M07 — Tool Registry & Capability Registry:** 🚧
 
 ## Architecture
 
