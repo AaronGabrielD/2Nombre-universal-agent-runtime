@@ -1,15 +1,10 @@
 """Public M01 API for lifecycle and isolated session state."""
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Any
 
-from app.core.contracts import (
-    ArchitecturePlan,
-    ArtifactRef,
-    ExecutionResult,
-    FinalResult,
-    HumanDecision,
-)
+from app.core.contracts import ArchitecturePlan, ArtifactRef, ExecutionResult, FinalResult, HumanDecision
 from app.core.models import EventRecord, RunContext
 from app.core.states import WorkflowState
 
@@ -26,18 +21,18 @@ class SessionManager:
     def create_session(self, *, metadata: dict[str, str] | None = None) -> RunContext:
         context = RunContext(metadata=dict(metadata or {}))
         self.repository.create(SessionRecord(context=context))
-        return context
+        return deepcopy(context)
 
     def destroy_session(self, run_id: str) -> None:
         self.repository.delete(run_id)
 
     def get_context(self, run_id: str) -> RunContext:
-        return self.repository.get(run_id).context
+        return deepcopy(self.repository.get(run_id).context)
 
     def transition(self, run_id: str, target: WorkflowState) -> RunContext:
         record = self.repository.get(run_id)
         record.context.transition_to(target)
-        return record.context
+        return deepcopy(record.context)
 
     def add_message(
         self,
@@ -84,8 +79,8 @@ class SessionManager:
         self.repository.get(run_id).final_result = result
 
     def snapshot(self, run_id: str) -> SessionRecord:
-        """Return the session record for inspection by orchestration layers."""
-        return self.repository.get(run_id)
+        """Return an isolated copy so callers cannot bypass SessionManager invariants."""
+        return deepcopy(self.repository.get(run_id))
 
     @staticmethod
     def event_for(run_id: str, *, event_type: str, message: str, status: str = "info") -> EventRecord:
