@@ -1,8 +1,8 @@
 """Stable, provider-neutral contracts shared between runtime modules."""
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
-from enum import StrEnum
+from dataclasses import dataclass, field, fields, is_dataclass
+from enum import Enum, StrEnum
 from typing import Any
 
 from .exceptions import ContractValidationError
@@ -25,14 +25,10 @@ class WorkerSpec:
     can_request_human_input: bool = True
 
     def validate(self) -> None:
-        if not self.worker_id.strip():
-            raise ContractValidationError("worker_id cannot be empty")
-        if not self.role.strip():
-            raise ContractValidationError(f"Worker {self.worker_id}: role cannot be empty")
-        if not self.mission.strip():
-            raise ContractValidationError(f"Worker {self.worker_id}: mission cannot be empty")
-        if self.worker_id in self.dependencies:
-            raise ContractValidationError(f"Worker {self.worker_id} cannot depend on itself")
+        if not self.worker_id.strip(): raise ContractValidationError("worker_id cannot be empty")
+        if not self.role.strip(): raise ContractValidationError(f"Worker {self.worker_id}: role cannot be empty")
+        if not self.mission.strip(): raise ContractValidationError(f"Worker {self.worker_id}: mission cannot be empty")
+        if self.worker_id in self.dependencies: raise ContractValidationError(f"Worker {self.worker_id} cannot depend on itself")
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,26 +43,16 @@ class ArchitecturePlan:
     workers: tuple[WorkerSpec, ...] = ()
 
     def validate(self, *, max_workers: int = 4) -> None:
-        if not self.plan_id.strip():
-            raise ContractValidationError("plan_id cannot be empty")
-        if not self.objective.strip():
-            raise ContractValidationError("objective cannot be empty")
-        if not self.workers:
-            raise ContractValidationError("ArchitecturePlan requires at least one worker")
-        if len(self.workers) > max_workers:
-            raise ContractValidationError(
-                f"ArchitecturePlan requested {len(self.workers)} workers; maximum is {max_workers}"
-            )
+        if not self.plan_id.strip(): raise ContractValidationError("plan_id cannot be empty")
+        if not self.objective.strip(): raise ContractValidationError("objective cannot be empty")
+        if not self.workers: raise ContractValidationError("ArchitecturePlan requires at least one worker")
+        if len(self.workers) > max_workers: raise ContractValidationError(f"ArchitecturePlan requested {len(self.workers)} workers; maximum is {max_workers}")
         ids = {worker.worker_id for worker in self.workers}
-        if len(ids) != len(self.workers):
-            raise ContractValidationError("Worker IDs must be unique")
+        if len(ids) != len(self.workers): raise ContractValidationError("Worker IDs must be unique")
         for worker in self.workers:
             worker.validate()
             missing = set(worker.dependencies) - ids
-            if missing:
-                raise ContractValidationError(
-                    f"Worker {worker.worker_id} has unknown dependencies: {sorted(missing)}"
-                )
+            if missing: raise ContractValidationError(f"Worker {worker.worker_id} has unknown dependencies: {sorted(missing)}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,14 +64,8 @@ class TaskSpec:
     required_tools: tuple[str, ...] = ()
 
     def validate(self) -> None:
-        for name, value in (
-            ("task_id", self.task_id),
-            ("worker_id", self.worker_id),
-            ("description", self.description),
-            ("expected_output", self.expected_output),
-        ):
-            if not value.strip():
-                raise ContractValidationError(f"{name} cannot be empty")
+        for name, value in (("task_id", self.task_id), ("worker_id", self.worker_id), ("description", self.description), ("expected_output", self.expected_output)):
+            if not value.strip(): raise ContractValidationError(f"{name} cannot be empty")
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,12 +80,8 @@ class ToolSpec:
     available: bool = True
 
     def validate(self) -> None:
-        if not self.tool_id.strip() or not self.name.strip():
-            raise ContractValidationError("Tool ID and name are required")
-        if self.risk_level == RiskLevel.HIGH and not self.requires_human_approval:
-            raise ContractValidationError(
-                f"High-risk tool {self.tool_id} must require human approval"
-            )
+        if not self.tool_id.strip() or not self.name.strip(): raise ContractValidationError("Tool ID and name are required")
+        if self.risk_level == RiskLevel.HIGH and not self.requires_human_approval: raise ContractValidationError(f"High-risk tool {self.tool_id} must require human approval")
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,14 +96,9 @@ class ExecutionRequest:
     environment: dict[str, str] = field(default_factory=dict)
 
     def validate(self, *, max_timeout_seconds: int = 3600) -> None:
-        if not self.execution_id.strip() or not self.run_id.strip() or not self.worker_id.strip():
-            raise ContractValidationError("execution_id, run_id and worker_id are required")
-        if not self.language.strip() or not self.code.strip():
-            raise ContractValidationError("language and code are required")
-        if not 1 <= self.timeout_seconds <= max_timeout_seconds:
-            raise ContractValidationError(
-                f"timeout_seconds must be between 1 and {max_timeout_seconds}"
-            )
+        if not self.execution_id.strip() or not self.run_id.strip() or not self.worker_id.strip(): raise ContractValidationError("execution_id, run_id and worker_id are required")
+        if not self.language.strip() or not self.code.strip(): raise ContractValidationError("language and code are required")
+        if not 1 <= self.timeout_seconds <= max_timeout_seconds: raise ContractValidationError(f"timeout_seconds must be between 1 and {max_timeout_seconds}")
 
 
 class ExecutionStatus(StrEnum):
@@ -186,9 +157,14 @@ class FinalResult:
     recommended_next_action: str = ""
 
 
-def to_dict(value: Any) -> dict[str, Any] | Any:
-    """Convert a contract dataclass into JSON-friendly primitives."""
-    if hasattr(value, "__dataclass_fields__"):
-        raw = asdict(value)
-        return raw
+def to_dict(value: Any) -> Any:
+    """Recursively convert runtime contracts to JSON-friendly primitives."""
+    if is_dataclass(value) and not isinstance(value, type):
+        return {item.name: to_dict(getattr(value, item.name)) for item in fields(value)}
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, dict):
+        return {str(key): to_dict(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [to_dict(item) for item in value]
     return value
