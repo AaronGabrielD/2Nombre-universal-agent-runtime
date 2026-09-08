@@ -43,9 +43,12 @@ class ExecutionGateway:
         settings: Settings | None = None,
     ) -> None:
         self._settings = settings or get_settings()
-        self._backends = {backend.info.backend_id: backend for backend in backends}
-        if len(self._backends) != len(tuple(backends)):
+        backend_items = tuple(backends)
+        self._backends = {backend.info.backend_id: backend for backend in backend_items}
+        if len(self._backends) != len(backend_items):
             raise ExecutionGatewayError("backend IDs must be unique")
+        for backend in backend_items:
+            backend.info.validate()
 
     def list_backends(self, *, available_only: bool = False) -> tuple[ExecutionBackendInfo, ...]:
         values = (backend.info for backend in self._backends.values())
