@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Iterable
 
 from app.core.config import Settings, get_settings
+from app.core.contracts import ArtifactRef
 from app.core.models import RunContext
 from app.core.states import WorkflowState
 from app.session.manager import SessionManager
@@ -82,8 +83,20 @@ class IntakeService:
         warnings: list[str] = []
         text_map = inline_text_by_name or {}
         for file in files_list:
-            item = self._normalize_file(file, inline_text=text_map.get(file.name))
+            inline_text = file.inline_text
+            if inline_text is None:
+                inline_text = text_map.get(file.name)
+            item = self._normalize_file(file, inline_text=inline_text)
             normalized.append(item)
+            self.session_manager.add_artifact(
+                context.run_id,
+                ArtifactRef(
+                    artifact_id=item.intake_id,
+                    name=file.name,
+                    mime_type=file.mime_type,
+                    uri=file.source_ref,
+                ),
+            )
             self.session_manager.add_message(
                 context.run_id,
                 role="system",
