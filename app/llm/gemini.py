@@ -15,9 +15,11 @@ class GeminiAdapterError(RuntimeErrorBase):
 
 
 class GeminiAdapter:
-    """Lazy, retrying adapter around the official google-genai SDK."""
+    """Lazy, bounded adapter around the official google-genai SDK."""
 
     provider_name = "gemini"
+    _HTTP_TIMEOUT_MS = 120_000
+    _MAX_ATTEMPTS = 3
 
     def __init__(
         self,
@@ -35,20 +37,23 @@ class GeminiAdapter:
         if self._client is None:
             try:
                 from google import genai
+                from google.genai import types
             except ImportError as exc:
                 raise GeminiAdapterError(
                     "google-genai is required. Install the runtime dependencies first."
                 ) from exc
             api_key = self.settings.require_gemini_key()
-            self._client = genai.Client(api_key=api_key)
+            self._client = genai.Client(
+                api_key=api_key,
+                http_options=types.HttpOptions(timeout=self._HTTP_TIMEOUT_MS),
+            )
         return self._client
 
     def generate(self, request: GenerationRequest) -> GenerationResponse:
         request.validate()
 
-        attempts = 3
         last_error: Exception | None = None
-        for attempt in range(attempts):
+        for attempt in range(self._MAX_ATTEMPTS):
             try:
                 config_kwargs: dict[str, Any] = {}
                 if request.system_instruction:
@@ -69,14 +74,14 @@ class GeminiAdapter:
                     config=config,
                 )
                 return self._normalize_response(request, response)
-            except Exception as exc:  # SDK exceptions vary across releases.
+            except Exception as exc:  # SDK exception types vary across releases.
                 last_error = exc
-                if not self._is_retryable(exc) or attempt == attempts - 1:
+                if not self._is_retryable(exc) or attempt == self._MAX_ATTEMPTS - 1:
                     break
                 self._sleep(2**attempt)
 
         raise GeminiAdapterError(
-            f"Gemini generation failed after {attempts} attempts: {last_error}"
+            f"Gemini generation failed after {self._MAX_ATTEMPTS} attempts: {last_error}"
         ) from last_error
 
     def _normalize_response(
