@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.approval.service import HumanApprovalEngine
+from app.approval.models import GateStatus
 from app.architect.models import ArchitectureInput
 from app.architect.service import UniversalArchitect
 from app.core.contracts import ArchitecturePlan, FinalResult, HumanDecision, HumanDecisionType, to_dict
@@ -62,13 +63,12 @@ class RuntimeCoordinator:
         inline_text_by_name: dict[str, str] | None = None,
     ) -> IntakeResult:
         """Create and normalize a run, leaving it in INTAKE."""
-        result = self.intake.start_session(
+        return self.intake.start_session(
             objective,
             files=files,
             metadata=metadata,
             inline_text_by_name=inline_text_by_name,
         )
-        return result
 
     def build_architecture(
         self,
@@ -81,7 +81,7 @@ class RuntimeCoordinator:
             raise RuntimeCoordinatorError("No UniversalArchitect provider has been configured")
 
         state = self.sessions.get_context(run_id).state
-        if state != WorkflowState.INTAKE and state != WorkflowState.ARCHITECTING:
+        if state not in {WorkflowState.INTAKE, WorkflowState.ARCHITECTING}:
             raise RuntimeCoordinatorError(f"Cannot architect from state {state.value}")
 
         self.sessions.transition(run_id, WorkflowState.ARCHITECTING)
@@ -111,25 +111,27 @@ class RuntimeCoordinator:
         )
         self.sessions.set_architecture_plan(run_id, plan)
         self.sessions.transition(run_id, WorkflowState.WAITING_ARCHITECT_APPROVAL)
-
         gate = self.approvals.request_gate(
             run_id=run_id,
             kind="ARCHITECTURE",
             title="Approve architecture plan",
-            prompt="Review the proposed architecture. Approve to authorize worker execution, modify/clarify to re-plan, or reject to stop the run.",
+            prompt=(
+                "Review the proposed architecture. Approve to authorize worker execution, "
+                "modify/clarify to re-plan, or reject to stop the run."
+            ),
             context={"plan": to_dict(plan)},
         )
         return ArchitectureCheckpoint(run_id=run_id, plan=plan, gate_id=gate.gate_id)
 
     def apply_architecture_decision(self, decision: HumanDecision) -> WorkflowState:
-        """Persist Gate A and apply its decision to the state machine."""
+        """Validate Gate A's recorded decision and apply it to the state machine."""
         context = self.sessions.get_context(decision.run_id)
         if context.state != WorkflowState.WAITING_ARCHITECT_APPROVAL:
             raise RuntimeCoordinatorError(
                 f"Architecture decision requires WAITING_ARCHITECT_APPROVAL, got {context.state.value}"
             )
+        self._validate_recorded_decision(decision)
         self.sessions.add_decision(decision.run_id, decision)
-        self._ensure_decision_belongs_to_open_gate(decision)
 
         if decision.decision == HumanDecisionType.APPROVE:
             self.sessions.transition(decision.run_id, WorkflowState.EXECUTING)
@@ -141,8 +143,9 @@ class RuntimeCoordinator:
             raise RuntimeCoordinatorError(f"Unsupported architecture decision: {decision.decision}")
         return self.sessions.get_context(decision.run_id).state
 
-    def record_supervisor_result(self, result: QAResult) -> str | None:
+    def record_supervisor_result(self, result: QAResult) -> str:
         """Open Gate D only for a deterministic supervisor PASS."""
+        result.validate()
         if result.status != QAStatus.PASS:
             raise RuntimeCoordinatorError("Final approval can only be requested after supervisor PASS")
 
@@ -186,8 +189,8 @@ class RuntimeCoordinator:
         }:
             raise RuntimeCoordinatorError("Invalid decision for final approval gate")
 
+        self._validate_recorded_decision(decision)
         self.sessions.add_decision(decision.run_id, decision)
-        self._ensure_decision_belongs_to_open_gate(decision)
 
         if decision.decision == HumanDecisionType.APPROVE:
             if final_result is None:
@@ -206,12 +209,13 @@ class RuntimeCoordinator:
             self.sessions.transition(decision.run_id, WorkflowState.REJECTED)
         return self.sessions.get_context(decision.run_id).state
 
-    def _ensure_decision_belongs_to_open_gate(self, decision: HumanDecision) -> None:
+    def _validate_recorded_decision(self, decision: HumanDecision) -> None:
+        """Ensure a decision is exactly the immutable record produced by the gate engine."""
         gate = self.approvals.get_gate(decision.gate_id)
         if gate.run_id != decision.run_id:
             raise RuntimeCoordinatorError("Decision gate/run ownership mismatch")
-        if gate.status.value != "resolved":
-            raise RuntimeCoordinatorError("Decision must reference an already-resolved approval gate")
+        if gate.status != GateStatus.RESOLVED:
+            raise RuntimeCoordinatorError("Decision must reference a resolved approval gate")
         stored = self.approvals.get_decision(decision.gate_id)
         if stored != decision:
             raise RuntimeCoordinatorError("Decision is not the recorded result of its approval gate")
