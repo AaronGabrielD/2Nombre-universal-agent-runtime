@@ -16,45 +16,44 @@ This file tracks the implementation order as the repository evolves beyond the o
 - M09 — Supervisor & QA
 - M10 — Runtime Coordinator
 - M11 — Chainlit Presentation
+- M12 — Colab Execution Service
+- M13 — Worker Runtime Adapter
+- M14 — CrewAI Worker Adapter
+- M15 — Integrated Orchestrator
 
-## M12 — Colab Execution Service
+## Current integrated path
 
-Implemented on the feature branch for integration:
-
-- authenticated `/execute` HTTP endpoint;
-- `/health` endpoint;
-- authenticated artifact retrieval;
-- bounded request/output/artifact sizes;
-- bounded Python execution timeout;
-- no shell execution;
-- reduced execution environment;
-- explicit network admission policy;
-- path validation and artifact traversal protection.
+```text
+User / Chainlit
+  -> M02 Intake
+  -> M04 Architect
+  -> Gate A (M05)
+  -> M06 Worker Factory + Dispatcher
+  -> M14 CrewAI Worker Adapter
+  -> M13 Worker Runtime Adapter
+  -> M08 Execution Gateway
+  -> Colab Execution Service
+  -> M01 Session evidence
+  -> M09 Supervisor / QA
+  -> Gate D (M05/M10)
+  -> Completed | Revision | Rejected
+```
 
 ## Intentionally not complete yet
 
-- Worker LLM/runtime implementation.
-- CrewAI adapter.
-- M07-to-M08 tool authorization/execution path.
-- End-to-end dispatch from an approved architecture to running workers.
-- End-to-end supervisor invocation after execution batches.
-- True sandbox isolation stronger than Colab's VM boundary.
+- Safe parallel worker execution with concurrent session writes.
+- Rich M07 tool invocation integration from workers.
+- Gate C lifecycle for high-risk tools in the integrated orchestrator.
 - Persistent production data layer.
 - Production authentication/authorization configuration for Chainlit.
-- Deployment adapter.
+- Deployment adapter and public hosting configuration.
+- Stronger execution sandbox than the Colab VM boundary.
+- Full live Colab + Chainlit + Gemini end-to-end validation in a real cloud runtime.
 
-## Recommended next integration slice
+## Next engineering priority
 
-```text
-M04 ArchitecturePlan
-  -> M06 WorkerFactory
-  -> M06 Dispatcher
-  -> Worker Runtime Adapter
-  -> M07 capability/tool validation
-  -> M08 Execution Gateway
-  -> M01 session updates
-  -> M09 Supervisor
-  -> M10 Gate D
-```
-
-CrewAI should enter through a provider/orchestration adapter at the worker-runtime boundary rather than replacing the runtime contracts.
+1. Harden M01 persistence and concurrency primitives.
+2. Integrate M07 capability/tool validation into M15 before any tool is exposed to a worker.
+3. Add explicit Gate C handling for high-risk tool execution.
+4. Add real integration tests using a local HTTP Colab-service double.
+5. Then enable controlled parallel execution per M06 batch.
