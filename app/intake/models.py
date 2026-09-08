@@ -16,12 +16,13 @@ class IngestStrategy(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class IntakeFile:
-    """Metadata supplied by the UI or another caller for one uploaded file."""
+    """Input metadata and optional inline text supplied by the caller."""
 
     name: str
     mime_type: str | None = None
     size_bytes: int = 0
     source_ref: str | None = None
+    inline_text: str | None = None
 
     def validate(self, *, max_size_bytes: int) -> None:
         if not self.name.strip():
@@ -32,6 +33,8 @@ class IntakeFile:
             raise ValueError(
                 f"file exceeds configured limit: {self.size_bytes} > {max_size_bytes} bytes"
             )
+        if self.inline_text is not None and not (self.mime_type or "").lower().startswith("text/"):
+            raise ValueError("inline_text is only allowed for text MIME types")
 
 
 @dataclass(frozen=True, slots=True)
