@@ -4,13 +4,17 @@ Universal multi-agent runtime under active construction.
 
 ## Current milestone
 
-**M00 — Foundation & Contracts**
+**M02 — Universal Intake**
 
-The core establishes provider-neutral contracts, configuration, workflow states, structured events, and regression tests.
+Implemented milestones:
+
+- **M00 — Foundation & Contracts:** provider-neutral contracts, configuration, workflow states, structured events, and regression tests.
+- **M01 — Session Manager:** unique run lifecycle, isolated session state, lifecycle transitions, and repository boundary.
+- **M02 — Universal Intake:** objective normalization, upload limits, file metadata registration, and provider-neutral ingestion strategy selection.
 
 ## Architecture
 
-See `BLUEPRINT_MASTER_v1.md` for the master architecture and `docs/architecture/M00_FOUNDATION.md` for the M00 boundary.
+See `BLUEPRINT_MASTER_v1.md` for the master architecture and `docs/architecture/` for milestone boundaries.
 
 ## Security rule
 
