@@ -2,15 +2,15 @@
 
 Universal multi-agent runtime under active construction.
 
-## Current milestone
+## Progress
 
-**M02 — Universal Intake**
-
-Implemented milestones:
-
-- **M00 — Foundation & Contracts:** provider-neutral contracts, configuration, workflow states, structured events, and regression tests.
-- **M01 — Session Manager:** unique run lifecycle, isolated session state, lifecycle transitions, and repository boundary.
-- **M02 — Universal Intake:** objective normalization, upload limits, file metadata registration, and provider-neutral ingestion strategy selection.
+- **M00 — Foundation & Contracts:** ✅
+- **M01 — Session Manager:** ✅
+- **M02 — Universal Intake:** ✅
+- **M03 — Gemini Adapter:** ✅
+- **M04 — Universal Architect:** ✅
+- **M05 — Human Approval Engine:** ✅
+- **M06 — Worker Factory & Dispatcher:** 🚧
 
 ## Architecture
 
