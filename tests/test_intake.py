@@ -33,6 +33,9 @@ class UniversalIntakeTests(unittest.TestCase):
         item = result.items[0]
         self.assertEqual(item.strategy, IngestStrategy.INLINE_TEXT)
         self.assertEqual(item.inline_text, "hello world")
+        artifacts = self.service.session_manager.snapshot(result.run_id).artifacts
+        self.assertEqual(len(artifacts), 1)
+        self.assertEqual(artifacts[0].name, "notes.txt")
 
     def test_multimodal_file_uses_remote_upload_strategy(self):
         file = IntakeFile(
@@ -43,6 +46,10 @@ class UniversalIntakeTests(unittest.TestCase):
         )
         result = self.service.start_session("Inspect image", files=[file])
         self.assertEqual(result.items[0].strategy, IngestStrategy.REMOTE_FILE_UPLOAD)
+        self.assertEqual(
+            self.service.session_manager.snapshot(result.run_id).artifacts[0].uri,
+            "upload-1",
+        )
 
     def test_unknown_binary_is_not_falsely_interpreted(self):
         file = IntakeFile(name="data.bin", mime_type="application/octet-stream", size_bytes=64)
