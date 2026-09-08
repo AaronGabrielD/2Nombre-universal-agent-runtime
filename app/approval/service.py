@@ -74,10 +74,24 @@ class HumanApprovalEngine:
             return _copy_gate(gate)
 
     def list_open_gates(self, *, run_id: str | None = None) -> tuple[ApprovalGate, ...]:
+        return self.list_gates(run_id=run_id, status=GateStatus.OPEN)
+
+    def list_gates(
+        self,
+        *,
+        run_id: str | None = None,
+        kind: str | None = None,
+        status: GateStatus | None = None,
+    ) -> tuple[ApprovalGate, ...]:
+        """List defensive gate snapshots with optional ownership filters."""
         with self._lock:
-            gates = [gate for gate in self._gates.values() if gate.status == GateStatus.OPEN]
+            gates = tuple(self._gates.values())
             if run_id is not None:
-                gates = [gate for gate in gates if gate.run_id == run_id]
+                gates = tuple(gate for gate in gates if gate.run_id == run_id)
+            if kind is not None:
+                gates = tuple(gate for gate in gates if gate.kind == kind)
+            if status is not None:
+                gates = tuple(gate for gate in gates if gate.status == status)
             return tuple(_copy_gate(gate) for gate in gates)
 
     def resolve_gate(
