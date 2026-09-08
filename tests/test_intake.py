@@ -1,4 +1,5 @@
 import unittest
+from dataclasses import replace
 
 from app.core.states import WorkflowState
 from app.intake.models import IngestStrategy, IntakeFile
@@ -50,7 +51,7 @@ class UniversalIntakeTests(unittest.TestCase):
         self.assertEqual(len(result.warnings), 1)
 
     def test_file_count_limit_is_enforced(self):
-        self.service.settings.max_uploads_per_message = 1
+        self.service.settings = replace(self.service.settings, max_uploads_per_message=1)
         first = IntakeFile(name="a.txt", mime_type="text/plain")
         second = IntakeFile(name="b.txt", mime_type="text/plain")
         with self.assertRaises(ValueError):
