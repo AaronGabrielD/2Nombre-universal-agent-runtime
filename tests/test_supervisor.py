@@ -4,7 +4,7 @@ import unittest
 
 from app.core.contracts import ExecutionResult, ExecutionStatus
 from app.session.models import WorkerOutput
-from app.supervisor import QAStatus, SupervisorInput, SupervisorService
+from app.supervisor import QAStatus, SupervisorError, SupervisorInput, SupervisorService
 
 
 def execution(status=ExecutionStatus.SUCCESS):
@@ -85,7 +85,7 @@ class SupervisorTests(unittest.TestCase):
         self.assertTrue(result.blocking_issues)
 
     def test_invalid_input_raises_supervisor_error(self):
-        with self.assertRaises(Exception):
+        with self.assertRaises(SupervisorError):
             SupervisorService().evaluate(SupervisorInput(run_id="", objective="x"))
 
 
