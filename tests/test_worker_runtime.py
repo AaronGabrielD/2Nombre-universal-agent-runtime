@@ -1,5 +1,6 @@
 import unittest
 
+from app.core.config import Settings
 from app.core.contracts import ExecutionResult, ExecutionStatus, TaskSpec
 from app.execution import ExecutionAuthorization, ExecutionBackend, ExecutionBackendInfo, ExecutionGateway
 from app.session.manager import SessionManager
@@ -22,6 +23,24 @@ class FakeBackend(ExecutionBackend):
             duration_ms=1,
             backend="test",
         )
+
+
+def test_settings():
+    return Settings(
+        gemini_api_key=None,
+        gemini_model_architect="architect",
+        gemini_model_worker="worker",
+        gemini_model_supervisor="supervisor",
+        gemini_temperature=0.2,
+        max_workers=4,
+        min_workers=3,
+        default_execution_timeout_seconds=60,
+        max_uploads_per_message=20,
+        max_upload_size_mb=100,
+        execution_backend="test",
+        execution_gateway_url=None,
+        execution_gateway_token=None,
+    )
 
 
 def batch(run_id="run-1", worker_id="worker-1"):
@@ -53,7 +72,7 @@ def task(worker_id="worker-1"):
 
 class WorkerRuntimeTests(unittest.TestCase):
     def make_adapter(self, sessions):
-        gateway = ExecutionGateway(backends=(FakeBackend(),), settings=None)
+        gateway = ExecutionGateway(backends=(FakeBackend(),), settings=test_settings())
         return WorkerRuntimeAdapter(gateway=gateway, session_manager=sessions)
 
     def test_denied_authorization_fails_closed_without_backend_execution(self):
