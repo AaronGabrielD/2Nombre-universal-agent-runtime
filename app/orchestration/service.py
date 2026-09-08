@@ -18,7 +18,7 @@ from app.session.models import WorkerOutput
 from app.supervisor.models import QAResult, QAStatus, SupervisorInput
 from app.supervisor.service import SupervisorService
 from app.workers.models import DispatchBatch
-from app.workers.runtime import WorkerRuntimeAdapter, WorkerRuntimeError
+from app.workers.runtime import WorkerExecutionTask, WorkerRuntimeAdapter, WorkerRuntimeError
 from app.workers.service import WorkerDispatcher, WorkerFactory
 from app.runtime.service import RuntimeCoordinator
 
@@ -61,7 +61,7 @@ class IntegratedOrchestrator:
         self.supervisor = supervisor or SupervisorService()
 
     def execute_run(self, run_id: str) -> OrchestrationResult:
-        """Execute all dispatch batches and finish at QA or Gate D."""
+        """Execute dependency-safe batches and finish at QA or Gate D."""
         context = self.sessions.get_context(run_id)
         if context.state != WorkflowState.EXECUTING:
             raise IntegratedOrchestrationError(
@@ -99,16 +99,20 @@ class IntegratedOrchestrator:
 
         for batch in batches:
             task_by_worker = {task.worker_id: task for task in batch.tasks}
+            executable: list[tuple[Any, WorkerExecutionTask]] = []
+
             for worker in batch.workers:
                 task = task_by_worker.get(worker.worker_id)
                 if task is None:
-                    output = WorkerOutput(
-                        worker_id=worker.worker_id,
-                        run_id=run_id,
-                        status="error",
-                        output={"error": "dispatcher produced no task for worker"},
+                    self.sessions.set_worker_output(
+                        run_id,
+                        WorkerOutput(
+                            worker_id=worker.worker_id,
+                            run_id=run_id,
+                            status="error",
+                            output={"error": "dispatcher produced no task for worker"},
+                        ),
                     )
-                    self.sessions.set_worker_output(run_id, output)
                     continue
 
                 try:
@@ -121,27 +125,55 @@ class IntegratedOrchestrator:
                             "acceptance_criteria": list(plan.acceptance_criteria),
                         },
                     )
-                    results = self.worker_runtime.execute_batch(
-                        batch=DispatchBatch(
-                            run_id=batch.run_id,
-                            workers=(worker,),
-                            tasks=(task,),
-                            sequence=batch.sequence,
+                    executable.append((worker, execution_plan))
+                except (RuntimeError, ValueError) as exc:
+                    self.sessions.set_worker_output(
+                        run_id,
+                        WorkerOutput(
+                            worker_id=worker.worker_id,
+                            run_id=run_id,
+                            status="error",
+                            output={"error": f"{type(exc).__name__}: {exc}"},
                         ),
-                        tasks=(execution_plan.execution_task,),
-                        authorization=approval,
                     )
-                    all_execution_results.extend(results)
-                    result = results[-1]
-                    status = "success" if result.status.value == "success" else result.status.value
-                    evidence: Any = {
-                        "summary": execution_plan.summary,
-                        "execution": to_dict(result),
-                    }
-                except (WorkerRuntimeError, RuntimeError, ValueError) as exc:
-                    status = "error"
-                    evidence = {"error": f"{type(exc).__name__}: {exc}"}
 
+            if not executable:
+                continue
+
+            runtime_tasks = tuple(item[1].execution_task for item in executable)
+            try:
+                results = self.worker_runtime.execute_batch(
+                    batch=DispatchBatch(
+                        run_id=batch.run_id,
+                        workers=tuple(item[0] for item in executable),
+                        tasks=tuple(item.task for item in runtime_tasks),
+                        sequence=batch.sequence,
+                    ),
+                    tasks=runtime_tasks,
+                    authorization=approval,
+                    parallel=len(runtime_tasks) > 1,
+                )
+            except (WorkerRuntimeError, RuntimeError, ValueError) as exc:
+                error = {"error": f"{type(exc).__name__}: {exc}"}
+                for worker, _execution_plan in executable:
+                    self.sessions.set_worker_output(
+                        run_id,
+                        WorkerOutput(
+                            worker_id=worker.worker_id,
+                            run_id=run_id,
+                            status="error",
+                            output=error,
+                        ),
+                    )
+                continue
+
+            all_execution_results.extend(results)
+            for (worker, execution_plan), result in zip(executable, results):
+                status = "success" if result.status.value == "success" else result.status.value
+                evidence: Any = {
+                    "summary": execution_plan.summary,
+                    "execution": to_dict(result),
+                }
                 self.sessions.set_worker_output(
                     run_id,
                     WorkerOutput(
