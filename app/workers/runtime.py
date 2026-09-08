@@ -6,7 +6,7 @@ M08 for every execution request.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from uuid import uuid4
 
 from app.core.contracts import ExecutionRequest, ExecutionResult, TaskSpec
@@ -14,7 +14,7 @@ from app.execution.models import ExecutionAuthorization
 from app.execution.service import ExecutionGateway
 from app.session.manager import SessionManager
 
-from .models import DispatchBatch, WorkerInstance
+from .models import DispatchBatch
 
 
 class WorkerRuntimeError(RuntimeError):
@@ -34,11 +34,7 @@ class WorkerExecutionTask:
     code: str
     timeout_seconds: int = 60
     needs_network: bool = False
-    environment: dict[str, str] = None  # type: ignore[assignment]
-
-    def __post_init__(self) -> None:
-        if self.environment is None:
-            object.__setattr__(self, "environment", {})
+    environment: dict[str, str] = field(default_factory=dict)
 
     def validate(self) -> None:
         self.task.validate()
@@ -46,6 +42,8 @@ class WorkerExecutionTask:
             raise WorkerRuntimeError("language cannot be empty")
         if not self.code.strip():
             raise WorkerRuntimeError("worker execution code cannot be empty")
+        if not isinstance(self.timeout_seconds, int) or isinstance(self.timeout_seconds, bool):
+            raise WorkerRuntimeError("timeout_seconds must be an integer")
         if self.timeout_seconds < 1:
             raise WorkerRuntimeError("timeout_seconds must be positive")
         if not isinstance(self.needs_network, bool):
