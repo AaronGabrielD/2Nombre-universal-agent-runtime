@@ -6,9 +6,11 @@ M08 for every execution request.
 """
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from uuid import uuid4
 
+from app.core.config import get_settings
 from app.core.contracts import ExecutionRequest, ExecutionResult, TaskSpec
 from app.execution.models import ExecutionAuthorization
 from app.execution.service import ExecutionGateway
@@ -56,7 +58,12 @@ class WorkerExecutionTask:
 
 
 class WorkerRuntimeAdapter:
-    """Execute a worker batch through M08 and persist results in M01."""
+    """Execute worker batches through M08 and persist results in M01.
+
+    Sequential execution remains the default. Parallel execution is opt-in,
+    bounded by the runtime's MAX_WORKERS safety ceiling, and preserves the
+    caller's task/result ordering.
+    """
 
     def __init__(
         self,
@@ -74,12 +81,56 @@ class WorkerRuntimeAdapter:
         tasks: tuple[WorkerExecutionTask, ...],
         authorization: ExecutionAuthorization,
         backend_id: str | None = None,
+        parallel: bool = False,
     ) -> tuple[ExecutionResult, ...]:
-        """Execute a batch deterministically and record each result in M01.
+        """Execute a dependency-safe batch and record every result in M01.
 
-        Only tasks whose worker belongs to the supplied batch and run may pass.
-        The gateway remains the sole execution boundary.
+        ``parallel=True`` only overlaps independent tasks already grouped into
+        the same M06 dispatch batch. Every task still crosses M08 independently
+        with the same explicit authorization. Results are returned in input
+        order even when completion order differs.
         """
+        self._validate_batch(batch=batch, tasks=tasks)
+        validated_tasks = tuple(tasks)
+        for item in validated_tasks:
+            item.validate()
+
+        if not parallel or len(validated_tasks) <= 1:
+            return tuple(
+                self._execute_one(
+                    batch=batch,
+                    item=item,
+                    authorization=authorization,
+                    backend_id=backend_id,
+                )
+                for item in validated_tasks
+            )
+
+        max_workers = min(len(validated_tasks), get_settings().max_workers)
+        with ThreadPoolExecutor(
+            max_workers=max_workers,
+            thread_name_prefix="uar-worker",
+        ) as pool:
+            futures = tuple(
+                pool.submit(
+                    self._execute_one,
+                    batch=batch,
+                    item=item,
+                    authorization=authorization,
+                    backend_id=backend_id,
+                )
+                for item in validated_tasks
+            )
+            # Calling result() in submission order gives deterministic API
+            # ordering while the backend calls themselves overlap.
+            return tuple(future.result() for future in futures)
+
+    def _validate_batch(
+        self,
+        *,
+        batch: DispatchBatch,
+        tasks: tuple[WorkerExecutionTask, ...],
+    ) -> None:
         if not batch.run_id.strip():
             raise WorkerRuntimeError("batch.run_id cannot be empty")
         if any(worker.run_id != batch.run_id for worker in batch.workers):
@@ -89,26 +140,37 @@ class WorkerRuntimeAdapter:
         task_workers = {item.task.worker_id for item in tasks}
         unknown = task_workers - worker_ids
         if unknown:
-            raise WorkerRuntimeError(f"tasks reference workers outside the batch: {sorted(unknown)}")
+            raise WorkerRuntimeError(
+                f"tasks reference workers outside the batch: {sorted(unknown)}"
+            )
 
-        results: list[ExecutionResult] = []
-        for item in tasks:
-            item.validate()
-            execution = ExecutionRequest(
-                execution_id=f"exec-{uuid4().hex}",
-                run_id=batch.run_id,
-                worker_id=item.task.worker_id,
-                language=item.language,
-                code=item.code,
-                timeout_seconds=item.timeout_seconds,
-                needs_network=item.needs_network,
-                environment=dict(item.environment),
+        if len(task_workers) != len(tasks):
+            raise WorkerRuntimeError(
+                "a dispatch batch cannot contain multiple tasks for the same worker"
             )
-            result = self.gateway.execute(
-                execution,
-                authorization=authorization,
-                backend_id=backend_id,
-            )
-            self.sessions.add_execution_result(batch.run_id, result)
-            results.append(result)
-        return tuple(results)
+
+    def _execute_one(
+        self,
+        *,
+        batch: DispatchBatch,
+        item: WorkerExecutionTask,
+        authorization: ExecutionAuthorization,
+        backend_id: str | None,
+    ) -> ExecutionResult:
+        execution = ExecutionRequest(
+            execution_id=f"exec-{uuid4().hex}",
+            run_id=batch.run_id,
+            worker_id=item.task.worker_id,
+            language=item.language,
+            code=item.code,
+            timeout_seconds=item.timeout_seconds,
+            needs_network=item.needs_network,
+            environment=dict(item.environment),
+        )
+        result = self.gateway.execute(
+            execution,
+            authorization=authorization,
+            backend_id=backend_id,
+        )
+        self.sessions.add_execution_result(batch.run_id, result)
+        return result
