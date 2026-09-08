@@ -1,6 +1,7 @@
 import unittest
 
 from app.core.contracts import ArtifactRef, HumanDecision, HumanDecisionType
+from app.core.exceptions import IllegalStateTransition
 from app.core.states import WorkflowState
 from app.session.manager import SessionManager
 from app.session.models import WorkerOutput
@@ -15,7 +16,6 @@ class SessionManagerTests(unittest.TestCase):
         first = self.manager.create_session()
         second = self.manager.create_session()
         self.assertNotEqual(first.run_id, second.run_id)
-
         self.manager.add_message(first.run_id, role="user", content="first")
         self.assertEqual(len(self.manager.snapshot(first.run_id).messages), 1)
         self.assertEqual(len(self.manager.snapshot(second.run_id).messages), 0)
@@ -24,9 +24,14 @@ class SessionManagerTests(unittest.TestCase):
         context = self.manager.create_session()
         self.manager.transition(context.run_id, WorkflowState.INTAKE)
         self.assertEqual(self.manager.get_context(context.run_id).state, WorkflowState.INTAKE)
-
-        with self.assertRaises(Exception):
+        with self.assertRaises(IllegalStateTransition):
             self.manager.transition(context.run_id, WorkflowState.COMPLETED)
+
+    def test_snapshot_is_copy_not_internal_state(self):
+        context = self.manager.create_session()
+        snapshot = self.manager.snapshot(context.run_id)
+        snapshot.context.metadata["mutated"] = "outside"
+        self.assertNotIn("mutated", self.manager.get_context(context.run_id).metadata)
 
     def test_records_are_scoped_to_run(self):
         context = self.manager.create_session()
