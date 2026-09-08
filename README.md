@@ -11,7 +11,8 @@ Universal multi-agent runtime under active construction.
 - **M04 — Universal Architect:** ✅
 - **M05 — Human Approval Engine:** ✅
 - **M06 — Worker Factory & Dispatcher:** ✅
-- **M07 — Tool Registry & Capability Registry:** 🚧
+- **M07 — Tool Registry & Capability Registry:** ✅
+- **M08 — Execution Gateway:** 🚧
 
 ## Architecture
 
