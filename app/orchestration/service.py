@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from app.agents.crewai_adapter import CrewAIWorkerAdapter, WorkerExecutionPlan
+from app.agents.crewai_adapter import CrewAIWorkerAdapter
 from app.core.contracts import ExecutionResult, HumanDecisionType, to_dict
 from app.core.states import WorkflowState
 from app.execution.models import ExecutionAuthorization
@@ -18,9 +18,9 @@ from app.session.models import WorkerOutput
 from app.supervisor.models import QAResult, QAStatus, SupervisorInput
 from app.supervisor.service import SupervisorService
 from app.workers.models import DispatchBatch
-from app.workers.runtime import WorkerExecutionTask, WorkerRuntimeAdapter, WorkerRuntimeError
+from app.workers.runtime import WorkerRuntimeAdapter, WorkerRuntimeError
 from app.workers.service import WorkerDispatcher, WorkerFactory
-from app.runtime.service import RuntimeCoordinator, RuntimeCoordinatorError
+from app.runtime.service import RuntimeCoordinator
 
 
 class IntegratedOrchestrationError(RuntimeError):
@@ -61,17 +61,12 @@ class IntegratedOrchestrator:
         self.supervisor = supervisor or SupervisorService()
 
     def execute_run(self, run_id: str) -> OrchestrationResult:
-        """Execute all dispatch batches and finish at QA or Gate D.
-
-        The run must already be in EXECUTING, which is only reachable after a
-        recorded Gate-A APPROVE. The orchestrator never fabricates approval.
-        """
+        """Execute all dispatch batches and finish at QA or Gate D."""
         context = self.sessions.get_context(run_id)
         if context.state != WorkflowState.EXECUTING:
             raise IntegratedOrchestrationError(
                 f"run {run_id} must be in EXECUTING, got {context.state.value}"
             )
-
         if self.worker_runtime is None:
             raise IntegratedOrchestrationError(
                 "WorkerRuntimeAdapter has not been configured with an ExecutionGateway"
@@ -88,9 +83,7 @@ class IntegratedOrchestrator:
             self.worker_dispatcher.build_task(
                 worker_id=worker.worker_id,
                 description=worker.mission,
-                expected_output=(
-                    ", ".join(worker.deliverables) or "a completed worker result"
-                ),
+                expected_output=", ".join(worker.deliverables) or "a completed worker result",
                 required_tools=worker.required_tools,
             )
             for worker in workers
@@ -103,20 +96,19 @@ class IntegratedOrchestrator:
 
         approval = self._execution_authorization(run_id)
         all_execution_results: list[ExecutionResult] = []
-        worker_evidence: dict[str, WorkerOutput] = {}
 
         for batch in batches:
             task_by_worker = {task.worker_id: task for task in batch.tasks}
             for worker in batch.workers:
                 task = task_by_worker.get(worker.worker_id)
                 if task is None:
-                    worker_evidence[worker.worker_id] = WorkerOutput(
+                    output = WorkerOutput(
                         worker_id=worker.worker_id,
                         run_id=run_id,
                         status="error",
                         output={"error": "dispatcher produced no task for worker"},
                     )
-                    self.sessions.set_worker_output(run_id, worker_evidence[worker.worker_id])
+                    self.sessions.set_worker_output(run_id, output)
                     continue
 
                 try:
@@ -142,7 +134,7 @@ class IntegratedOrchestrator:
                     all_execution_results.extend(results)
                     result = results[-1]
                     status = "success" if result.status.value == "success" else result.status.value
-                    evidence = {
+                    evidence: Any = {
                         "summary": execution_plan.summary,
                         "execution": to_dict(result),
                     }
@@ -150,25 +142,28 @@ class IntegratedOrchestrator:
                     status = "error"
                     evidence = {"error": f"{type(exc).__name__}: {exc}"}
 
-                worker_evidence[worker.worker_id] = WorkerOutput(
-                    worker_id=worker.worker_id,
-                    run_id=run_id,
-                    status=status,
-                    output=evidence,
+                self.sessions.set_worker_output(
+                    run_id,
+                    WorkerOutput(
+                        worker_id=worker.worker_id,
+                        run_id=run_id,
+                        status=status,
+                        output=evidence,
+                    ),
                 )
-                self.sessions.set_worker_output(run_id, worker_evidence[worker.worker_id])
 
         self.sessions.transition(run_id, WorkflowState.SUPERVISING)
         final_snapshot = self.sessions.snapshot(run_id)
-        qa_input = SupervisorInput(
-            run_id=run_id,
-            objective=plan.objective,
-            acceptance_criteria=plan.acceptance_criteria,
-            worker_outputs=tuple(final_snapshot.worker_outputs.values()),
-            execution_results=final_snapshot.execution_results,
-            artifacts=tuple(to_dict(item) for item in final_snapshot.artifacts),
+        qa = self.supervisor.evaluate(
+            SupervisorInput(
+                run_id=run_id,
+                objective=plan.objective,
+                acceptance_criteria=plan.acceptance_criteria,
+                worker_outputs=tuple(final_snapshot.worker_outputs.values()),
+                execution_results=final_snapshot.execution_results,
+                artifacts=tuple(to_dict(item) for item in final_snapshot.artifacts),
+            )
         )
-        qa = self.supervisor.evaluate(qa_input)
         self.sessions.add_message(
             run_id,
             role="supervisor",
@@ -192,19 +187,18 @@ class IntegratedOrchestrator:
 
     def _execution_authorization(self, run_id: str) -> ExecutionAuthorization:
         snapshot = self.sessions.snapshot(run_id)
-        approvals = [
-            decision
-            for decision in snapshot.decisions
-            if decision.decision == HumanDecisionType.APPROVE
-        ]
-        if not approvals:
+        valid_approvals = []
+        for decision in snapshot.decisions:
+            if decision.decision != HumanDecisionType.APPROVE:
+                continue
+            gate = self.coordinator.approvals.get_gate(decision.gate_id)
+            if gate.run_id == run_id and gate.kind == "ARCHITECTURE":
+                valid_approvals.append(gate)
+        if not valid_approvals:
             raise IntegratedOrchestrationError(
                 "no recorded human Gate-A approval is available for execution"
             )
-        decision = approvals[0]
-        gate = self.coordinator.approvals.get_gate(decision.gate_id)
-        if gate.run_id != run_id or gate.kind != "ARCHITECTURE":
-            raise IntegratedOrchestrationError("recorded approval is not a valid Gate-A approval")
+        gate = valid_approvals[-1]
         return ExecutionAuthorization(
             authorized=True,
             reason="worker execution authorized by Gate A",
