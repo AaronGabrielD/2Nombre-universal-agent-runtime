@@ -2,12 +2,12 @@ import unittest
 
 from app.approval.service import HumanApprovalEngine
 from app.architect.models import ArchitectureInput
-from app.core.contracts import ArchitecturePlan, HumanDecisionType, WorkerSpec
+from app.core.contracts import ArchitecturePlan, HumanDecision, HumanDecisionType, WorkerSpec
 from app.core.states import WorkflowState
 from app.intake.service import IntakeService
 from app.runtime.service import RuntimeCoordinator, RuntimeCoordinatorError
-from app.supervisor.models import QAResult, QAStatus
 from app.session.manager import SessionManager
+from app.supervisor.models import QAResult, QAStatus
 
 
 class StubArchitect:
@@ -44,28 +44,29 @@ class RuntimeCoordinatorTests(unittest.TestCase):
     def test_architecture_requires_human_approval_before_execution(self):
         coordinator, sessions, approvals = make_coordinator()
         intake = coordinator.start_run("Build a test project")
-
         checkpoint = coordinator.build_architecture(intake.run_id)
+
         self.assertEqual(
             sessions.get_context(intake.run_id).state,
             WorkflowState.WAITING_ARCHITECT_APPROVAL,
         )
         self.assertEqual(len(approvals.list_open_gates(run_id=intake.run_id)), 1)
 
+        fabricated = HumanDecision(
+            gate_id=checkpoint.gate_id,
+            run_id=intake.run_id,
+            decision=HumanDecisionType.APPROVE,
+            feedback="not actually recorded",
+            timestamp="2026-01-01T00:00:00+00:00",
+        )
         with self.assertRaises(RuntimeCoordinatorError):
-            coordinator.apply_architecture_decision(
-                __import__("app.core.contracts", fromlist=["HumanDecision"]).HumanDecision(
-                    gate_id=checkpoint.gate_id,
-                    run_id=intake.run_id,
-                    decision=HumanDecisionType.APPROVE,
-                    feedback="not actually recorded",
-                    timestamp="2026-01-01T00:00:00+00:00",
-                )
-            )
+            coordinator.apply_architecture_decision(fabricated)
+
         self.assertEqual(
             sessions.get_context(intake.run_id).state,
             WorkflowState.WAITING_ARCHITECT_APPROVAL,
         )
+        self.assertEqual(sessions.snapshot(intake.run_id).decisions, [])
 
     def test_approved_architecture_authorizes_execution_state_only(self):
         coordinator, sessions, approvals = make_coordinator()
@@ -96,7 +97,7 @@ class RuntimeCoordinatorTests(unittest.TestCase):
             findings=("missing requirement",),
             blocking_issues=("missing requirement",),
             recommended_action="revise",
-            evidence=(),
+            evidence={},
         )
         with self.assertRaises(RuntimeCoordinatorError):
             coordinator.record_supervisor_result(result)
@@ -121,10 +122,9 @@ class RuntimeCoordinatorTests(unittest.TestCase):
             findings=(),
             blocking_issues=(),
             recommended_action="request_final_human_approval",
-            evidence=(),
+            evidence={},
         )
         gate_id = coordinator.record_supervisor_result(qa)
-        self.assertIsNotNone(gate_id)
         self.assertEqual(
             sessions.get_context(intake.run_id).state,
             WorkflowState.WAITING_FINAL_APPROVAL,
@@ -139,26 +139,35 @@ class RuntimeCoordinatorTests(unittest.TestCase):
         self.assertEqual(state, WorkflowState.COMPLETED)
         self.assertIsNotNone(sessions.snapshot(intake.run_id).final_result)
 
-    def test_cross_run_gate_decision_is_rejected(self):
-        coordinator, _, approvals = make_coordinator()
+    def test_cross_run_gate_decision_is_rejected_without_mutating_session(self):
+        coordinator, sessions, approvals = make_coordinator()
         run_a = coordinator.start_run("A")
-        checkpoint = coordinator.build_architecture(run_a.run_id)
+        checkpoint_a = coordinator.build_architecture(run_a.run_id)
         run_b = coordinator.start_run("B")
+        checkpoint_b = coordinator.build_architecture(run_b.run_id)
 
+        fabricated = HumanDecision(
+            gate_id=checkpoint_a.gate_id,
+            run_id=run_b.run_id,
+            decision=HumanDecisionType.APPROVE,
+            feedback="cross-run",
+            timestamp="2026-01-01T00:00:00+00:00",
+        )
         with self.assertRaises(RuntimeCoordinatorError):
-            coordinator.apply_architecture_decision(
-                __import__("app.core.contracts", fromlist=["HumanDecision"]).HumanDecision(
-                    gate_id=checkpoint.gate_id,
-                    run_id=run_b.run_id,
-                    decision=HumanDecisionType.APPROVE,
-                    feedback="cross-run",
-                    timestamp="2026-01-01T00:00:00+00:00",
-                )
-            )
+            coordinator.apply_architecture_decision(fabricated)
 
         self.assertEqual(
+            sessions.get_context(run_b.run_id).state,
+            WorkflowState.WAITING_ARCHITECT_APPROVAL,
+        )
+        self.assertEqual(sessions.snapshot(run_b.run_id).decisions, [])
+        self.assertEqual(
             approvals.list_open_gates(run_id=run_a.run_id)[0].gate_id,
-            checkpoint.gate_id,
+            checkpoint_a.gate_id,
+        )
+        self.assertEqual(
+            approvals.list_open_gates(run_id=run_b.run_id)[0].gate_id,
+            checkpoint_b.gate_id,
         )
 
 
