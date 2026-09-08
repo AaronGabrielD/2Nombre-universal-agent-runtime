@@ -1,0 +1,2 @@
+# Optional orchestration adapter. The core runtime remains usable without CrewAI.
+crewai==1.15.20
