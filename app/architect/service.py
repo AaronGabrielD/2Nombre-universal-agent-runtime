@@ -7,6 +7,7 @@ from typing import Any
 
 from app.core.contracts import ArchitecturePlan, WorkerSpec
 from app.core.config import Settings, get_settings
+from app.core.exceptions import ContractValidationError
 from app.llm.interfaces import GenerationRequest, LLMProvider
 
 from .models import ArchitectureInput
@@ -79,7 +80,7 @@ class UniversalArchitect:
             data = _decode_json_object(generation.text)
             plan = _plan_from_dict(data)
             plan.validate(max_workers=self._settings.max_workers)
-        except (ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
+        except (ValueError, TypeError, KeyError, json.JSONDecodeError, ContractValidationError) as exc:
             raise ArchitectPlanningError(f"Invalid architecture plan: {exc}") from exc
         return plan
 
