@@ -22,8 +22,8 @@ class M27M28Tests(unittest.TestCase):
         joined = " ".join(command)
         self.assertIn("--network none", joined)
         self.assertIn("--read-only", joined)
-        self.assertIn("--cap-drop ALL", joined)
-        self.assertIn("--security-opt no-new-privileges:true", joined)
+        self.assertIn("--cap-drop=ALL", joined)
+        self.assertIn("--security-opt=no-new-privileges:true", joined)
         self.assertIn("--pids-limit 128", joined)
 
     def test_json_session_repository_round_trip(self):
