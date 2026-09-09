@@ -19,7 +19,7 @@ from app.supervisor.models import QAResult, QAStatus, SupervisorInput
 from app.supervisor.service import SupervisorService
 from app.tools.authorization import ToolAuthorizationRequest, ToolAuthorizationService
 from app.workers.models import DispatchBatch, WorkerInstance
-from app.workers.runtime import WorkerExecutionTask, WorkerRuntimeAdapter, WorkerRuntimeError
+from app.workers.runtime import WorkerRuntimeAdapter, WorkerRuntimeError
 from app.workers.service import WorkerDispatcher, WorkerFactory
 from app.runtime.service import RuntimeCoordinator
 
@@ -269,7 +269,12 @@ class IntegratedOrchestrator:
         if qa.status == QAStatus.PASS:
             final_gate_id = self.coordinator.record_supervisor_result(qa)
         else:
-            self.sessions.transition(run_id, WorkflowState.REVISION)
+            self.coordinator.record_revision(
+                run_id,
+                reason=f"Supervisor QA returned {qa.status.value}",
+                source="supervisor",
+                feedback=qa.summary,
+            )
 
         return OrchestrationResult(
             run_id=run_id,
@@ -316,7 +321,12 @@ class IntegratedOrchestrator:
             ),
         )
         if not authorization.authorized:
-            self.sessions.transition(run_id, WorkflowState.REVISION)
+            self.coordinator.record_revision(
+                run_id,
+                reason="Risky tool authorization was denied",
+                source=actor,
+                feedback=feedback,
+            )
             return OrchestrationResult(
                 run_id=run_id,
                 batches=(),
