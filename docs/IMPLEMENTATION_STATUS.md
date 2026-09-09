@@ -31,6 +31,9 @@ This file tracks the implementation order as the repository evolves beyond the o
 - M24 — Automated CI validation
 - M25 — Provider-neutral deployment adapter
 - M26 — Multi-user durable identity and run authorization
+- M27 — Stronger Docker execution isolation backend
+- M28 — Schema-versioned persistence migrations + JSON durable session backend
+- M29 — Live cloud smoke-validation harness
 
 ## Current integrated path
 
@@ -47,39 +50,24 @@ User / Chainlit
   -> M14 CrewAI Worker Adapter
   -> M13 Worker Runtime Adapter
   -> M08 Execution Gateway
-  -> M12 Colab Execution Service
-  -> M23 Python Execution Admission Policy
+  -> Colab M12 or Docker M27 execution backend
+  -> M23 Python Execution Admission Policy on Colab
   -> M01 Session evidence
-  -> M21 Persistent Session Repository (optional)
+  -> M21 SQLite or M28 JSON durable repository
   -> M09 Supervisor / QA
   -> Gate D (M05/M10)
   -> Completed | Revision | Rejected
-
-Cross-cutting controls:
-  M17 Concurrent Session Writes
-  M18 Bounded Parallel Execution
-  M20 HTTP Contract Integration Tests
-  M24 Automated CI Test Suite
-  M25 Provider-Neutral Deployment Boundary
-  M26 Durable Identity + Owner/Administrator Run Access
 ```
 
-## M26 scope
+## Security and deployment boundaries
 
-M26 adds a provider-neutral identity layer backed by SQLite without storing plaintext passwords. Users have a stable `user_id`, username, PBKDF2 password record, enabled state, and role (`user` or `admin`). The environment-backed account from M22 remains a bootstrap mechanism: the first successful login persists that identity into the configured SQLite database without overwriting an existing record.
+- M27 provides container-level defense in depth when Docker is available; it is not a high-assurance VM boundary.
+- M23 remains the static admission policy for the Colab execution service.
+- M28 migrations are transactional and schema-versioned; the M28 JSON backend uses explicit JSON reconstruction rather than arbitrary-object deserialization.
+- M29 is an executable external smoke-test harness. The repository/CI cannot truthfully claim a live Colab deployment test without a reachable endpoint and its secret token.
+- M25 remains provider-neutral deployment rendering; it does not provision third-party infrastructure automatically.
+- Direct tool handlers remain declarative and execution stays behind M08.
 
-Runtime sessions created through Chainlit receive immutable owner metadata. Normal users may access only their own runs; administrators may access runs across users. Gate actions are checked against the same ownership boundary before any decision is applied.
+## Final repository readiness
 
-## Intentionally not complete yet
-
-- Strong OS/container isolation beyond static admission controls and the Colab VM boundary.
-- Provider-neutral durable storage backends beyond SQLite and schema-versioned migrations.
-- Deployment execution against a concrete hosting provider; M25 currently validates and renders deployment plans without performing external provisioning.
-- Full live Colab + Chainlit + Gemini end-to-end validation in a real cloud runtime.
-- Direct tool-handler execution from workers; tools remain declarative and execution stays behind M08.
-
-## Next engineering priority
-
-1. M27 — Stronger OS/container execution isolation where available.
-2. M28 — Schema-versioned persistence migrations and durable backends.
-3. M29 — Live cloud validation against the real Google Colab service and configured Gemini provider.
+The original Blueprint requirements and all deferred engineering milestones represented by M26–M29 now have code, tests, and documentation. The remaining operational action is environment-specific: deploy the runtime/Colab service and run `python scripts/m29_cloud_smoke.py` against the real endpoint when credentials and a reachable URL are available.
