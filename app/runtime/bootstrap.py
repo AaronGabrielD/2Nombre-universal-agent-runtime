@@ -14,7 +14,7 @@ from app.approval.service import HumanApprovalEngine
 from app.architect.service import UniversalArchitect
 from app.core.config import Settings, get_settings
 from app.execution import ColabExecutionBackend, DockerExecutionBackend, ExecutionGateway
-from app.identity import IdentityService, SQLiteUserRepository
+from app.identity import IdentityService, RunAuthorizationService, SQLiteUserRepository
 from app.intake.service import IntakeService
 from app.llm.gemini import GeminiAdapter
 from app.orchestration.service import IntegratedOrchestrator
@@ -37,6 +37,7 @@ class RuntimeApplication:
     sessions: SessionManager
     approvals: HumanApprovalEngine
     identity: IdentityService
+    run_authorization: RunAuthorizationService
 
 
 def build_runtime(settings: Settings | None = None) -> RuntimeApplication:
@@ -94,4 +95,5 @@ def build_runtime(settings: Settings | None = None) -> RuntimeApplication:
         sessions=sessions,
         approvals=approvals,
         identity=identity,
+        run_authorization=RunAuthorizationService(),
     )
