@@ -6,6 +6,7 @@ from threading import RLock
 from typing import Protocol
 
 from app.core.exceptions import RuntimeErrorBase
+from app.persistence.migrations import Migration, MigrationError, MigrationRunner
 
 from .models import UserRecord, UserRole
 
@@ -65,7 +66,7 @@ class InMemoryUserRepository:
 
 
 class SQLiteUserRepository:
-    """SQLite identity repository with explicit columns and no pickled data."""
+    """SQLite identity repository with explicit columns and schema versioning."""
 
     def __init__(self, database_path: str) -> None:
         if not isinstance(database_path, str) or not database_path.strip():
@@ -73,22 +74,28 @@ class SQLiteUserRepository:
         self._database_path = database_path
         self._lock = RLock()
         try:
-            with sqlite3.connect(self._database_path) as connection:
-                connection.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS users (
-                        user_id TEXT PRIMARY KEY,
-                        username TEXT NOT NULL UNIQUE,
-                        password_hash TEXT NOT NULL,
-                        role TEXT NOT NULL,
-                        enabled INTEGER NOT NULL,
-                        created_at TEXT NOT NULL,
-                        updated_at TEXT NOT NULL
-                    )
-                    """
-                )
-        except sqlite3.Error as exc:
+            MigrationRunner(
+                self._database_path,
+                [Migration(1, "create users table", self._migration_v1)],
+            ).migrate()
+        except (sqlite3.Error, MigrationError) as exc:
             raise UserRepositoryError(f"failed to initialize identity database: {exc}") from exc
+
+    @staticmethod
+    def _migration_v1(connection: sqlite3.Connection) -> None:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS users (
+                user_id TEXT PRIMARY KEY,
+                username TEXT NOT NULL UNIQUE,
+                password_hash TEXT NOT NULL,
+                role TEXT NOT NULL,
+                enabled INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
 
     def create(self, user: UserRecord) -> UserRecord:
         user.validate()
@@ -102,29 +109,14 @@ class SQLiteUserRepository:
                         (user_id, username, password_hash, role, enabled, created_at, updated_at)
                         VALUES (?, ?, ?, ?, ?, ?, ?)
                         """,
-                        (
-                            user.user_id,
-                            username,
-                            user.password_hash,
-                            user.role.value,
-                            int(user.enabled),
-                            user.created_at,
-                            user.updated_at,
-                        ),
+                        (user.user_id, username, user.password_hash, user.role.value, int(user.enabled), user.created_at, user.updated_at),
                     )
             except sqlite3.IntegrityError as exc:
                 raise ValueError(f"identity already exists for username or user_id: {username}") from exc
             except sqlite3.Error as exc:
                 raise UserRepositoryError(f"failed to create identity {username}: {exc}") from exc
-        return UserRecord(
-            user_id=user.user_id,
-            username=username,
-            password_hash=user.password_hash,
-            role=user.role,
-            enabled=user.enabled,
-            created_at=user.created_at,
-            updated_at=user.updated_at,
-        )
+        return UserRecord(user_id=user.user_id, username=username, password_hash=user.password_hash, role=user.role,
+                          enabled=user.enabled, created_at=user.created_at, updated_at=user.updated_at)
 
     def get_by_username(self, username: str) -> UserRecord:
         normalized = _normalize_username(username)
@@ -132,8 +124,7 @@ class SQLiteUserRepository:
             try:
                 with sqlite3.connect(self._database_path) as connection:
                     row = connection.execute(
-                        "SELECT user_id, username, password_hash, role, enabled, created_at, updated_at "
-                        "FROM users WHERE username = ?",
+                        "SELECT user_id, username, password_hash, role, enabled, created_at, updated_at FROM users WHERE username = ?",
                         (normalized,),
                     ).fetchone()
             except sqlite3.Error as exc:
@@ -147,8 +138,7 @@ class SQLiteUserRepository:
             try:
                 with sqlite3.connect(self._database_path) as connection:
                     row = connection.execute(
-                        "SELECT user_id, username, password_hash, role, enabled, created_at, updated_at "
-                        "FROM users WHERE user_id = ?",
+                        "SELECT user_id, username, password_hash, role, enabled, created_at, updated_at FROM users WHERE user_id = ?",
                         (user_id,),
                     ).fetchone()
             except sqlite3.Error as exc:
@@ -162,8 +152,7 @@ class SQLiteUserRepository:
             try:
                 with sqlite3.connect(self._database_path) as connection:
                     rows = connection.execute(
-                        "SELECT user_id, username, password_hash, role, enabled, created_at, updated_at "
-                        "FROM users ORDER BY username"
+                        "SELECT user_id, username, password_hash, role, enabled, created_at, updated_at FROM users ORDER BY username"
                     ).fetchall()
             except sqlite3.Error as exc:
                 raise UserRepositoryError(f"failed to list identities: {exc}") from exc
@@ -181,14 +170,7 @@ def _normalize_username(username: str) -> str:
 
 def _row_to_user(row: tuple[object, ...]) -> UserRecord:
     try:
-        return UserRecord(
-            user_id=str(row[0]),
-            username=str(row[1]),
-            password_hash=str(row[2]),
-            role=UserRole(str(row[3])),
-            enabled=bool(row[4]),
-            created_at=str(row[5]),
-            updated_at=str(row[6]),
-        )
+        return UserRecord(user_id=str(row[0]), username=str(row[1]), password_hash=str(row[2]), role=UserRole(str(row[3])),
+                          enabled=bool(row[4]), created_at=str(row[5]), updated_at=str(row[6]))
     except (IndexError, ValueError) as exc:
         raise UserRepositoryError("stored identity row is invalid") from exc
