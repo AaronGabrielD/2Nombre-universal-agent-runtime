@@ -27,6 +27,7 @@ This file tracks the implementation order as the repository evolves beyond the o
 - M20 — HTTP integration test coverage (M08 ↔ M12)
 - M21 — Persistent session storage via SQLite repository
 - M22 — Chainlit authentication hardening
+- M23 — Static Python execution admission policy
 
 ## Current integrated path
 
@@ -43,6 +44,7 @@ User / Chainlit
   -> M13 Worker Runtime Adapter
   -> M08 Execution Gateway
   -> M12 Colab Execution Service
+  -> M23 Python Execution Admission Policy
   -> M01 Session evidence
   -> M21 Persistent Session Repository (optional)
   -> M09 Supervisor / QA
@@ -58,18 +60,17 @@ Cross-cutting controls:
 
 ## Intentionally not complete yet
 
-- Direct tool-handler invocation from workers; M07/M16 authorize declarations and preserve M08 as the execution boundary.
+- Strong OS/container isolation beyond static admission controls and the Colab VM boundary.
 - Multi-user durable identity management beyond the environment-backed bootstrap account.
-- Provider-neutral durable storage backends beyond SQLite.
-- Production deployment adapter and public hosting configuration.
-- Stronger execution sandbox than the Colab VM boundary.
+- Provider-neutral durable storage backends beyond SQLite and schema-versioned migrations.
+- Provider-neutral deployment adapter and public hosting configuration.
 - Full live Colab + Chainlit + Gemini end-to-end validation in a real cloud runtime.
-- Schema-versioned durable storage migration strategy.
+- Direct tool-handler execution from workers; tools remain declarative and execution stays behind M08.
 
 ## Next engineering priority
 
-1. M23 — Stronger execution isolation and sandbox policy.
-2. M24 — Live cloud validation with free-tier-compatible providers.
-3. M25 — Provider-neutral deployment adapter.
-4. M26 — Multi-user durable identity and authorization.
-5. M27 — Schema-versioned persistence migrations.
+1. M24 — Live cloud validation with free-tier-compatible providers.
+2. M25 — Provider-neutral deployment adapter and operational configuration.
+3. M26 — Multi-user durable identity and authorization.
+4. M27 — Stronger OS/container execution isolation where available.
+5. M28 — Schema-versioned persistence migrations and durable backends.

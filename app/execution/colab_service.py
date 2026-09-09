@@ -5,9 +5,9 @@ uses only the Python standard library. It authenticates requests, executes
 Python without a shell, enforces a timeout, captures bounded output, and exposes
 stored artifacts through a read endpoint.
 
-Important: a normal Colab VM is not a security sandbox. ``needs_network`` is an
-admission-policy flag, not a mechanism that disables network access inside the
-Python process.
+Important: a normal Colab VM is not a security sandbox. The static Python policy
+and ``needs_network`` admission check are defense-in-depth controls, not a
+replacement for OS/container isolation.
 """
 from __future__ import annotations
 
@@ -25,6 +25,8 @@ import shutil
 import subprocess
 import sys
 import uuid
+
+from app.execution.policy import ExecutionPolicyError, PythonExecutionPolicy
 
 
 class ColabExecutionServiceError(ValueError):
@@ -48,6 +50,9 @@ class ExecutionServiceConfig:
         self.default_timeout_seconds = _int_env("RUNTIME_DEFAULT_TIMEOUT_SECONDS", 60, minimum=1, maximum=3600)
         self.max_timeout_seconds = _int_env("RUNTIME_MAX_TIMEOUT_SECONDS", 600, minimum=1, maximum=3600)
         self.allow_network_requests = _bool_env("RUNTIME_ALLOW_NETWORK", False)
+        self.python_policy_mode = os.getenv("RUNTIME_PYTHON_POLICY", "restricted").strip().lower()
+        if self.python_policy_mode not in {"restricted", "unsafe"}:
+            raise ColabExecutionServiceError("RUNTIME_PYTHON_POLICY must be 'restricted' or 'unsafe'")
         self.public_base_url = os.getenv("RUNTIME_PUBLIC_BASE_URL", "").strip().rstrip("/")
         if not self.token:
             raise ColabExecutionServiceError("RUNTIME_EXECUTION_TOKEN must be configured")
@@ -63,7 +68,7 @@ class ColabExecutionRequestHandler(BaseHTTPRequestHandler):
     def config(self) -> ExecutionServiceConfig:
         return self.server.runtime_config  # type: ignore[attr-defined]
 
-    def do_GET(self) -> None:  # noqa: N802 - stdlib handler API
+    def do_GET(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
         if path == "/health":
             self._send_json(HTTPStatus.OK, {"status": "ok", "backend": "colab-service"})
@@ -73,7 +78,7 @@ class ColabExecutionRequestHandler(BaseHTTPRequestHandler):
             return
         self._send_json(HTTPStatus.NOT_FOUND, {"error": "not_found"})
 
-    def do_POST(self) -> None:  # noqa: N802 - stdlib handler API
+    def do_POST(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
         if path != "/execute":
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "not_found"})
@@ -88,14 +93,13 @@ class ColabExecutionRequestHandler(BaseHTTPRequestHandler):
         except ColabExecutionServiceError as exc:
             self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
             return
-        except Exception as exc:  # defensive HTTP boundary
+        except Exception as exc:
             self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": f"internal error: {exc}"})
             return
 
         self._send_json(HTTPStatus.OK, response)
 
     def log_message(self, fmt: str, *args: object) -> None:
-        """Avoid leaking request bodies or credentials into stdout."""
         print(f"[colab-service] {self.address_string()} - {fmt % args}")
 
     def _authorized(self) -> bool:
@@ -168,6 +172,7 @@ class ColabCodeExecutor:
 
     def __init__(self, config: ExecutionServiceConfig) -> None:
         self.config = config
+        self.policy = PythonExecutionPolicy()
 
     def execute(self, payload: dict[str, Any]) -> dict[str, Any]:
         request = self._validate_request(payload)
@@ -195,6 +200,19 @@ class ColabCodeExecutor:
                 exit_code=None,
                 duration_ms=_duration_ms(started),
             )
+
+        if self.config.python_policy_mode == "restricted":
+            try:
+                self.policy.validate(request["code"])
+            except ExecutionPolicyError as exc:
+                return self._result(
+                    execution_id=execution_id,
+                    status="denied",
+                    stdout="",
+                    stderr=f"python execution blocked by policy: {exc}",
+                    exit_code=None,
+                    duration_ms=_duration_ms(started),
+                )
 
         execution_root = (self.config.artifact_root / execution_id).resolve()
         execution_root.mkdir(parents=True, exist_ok=True)
@@ -299,14 +317,12 @@ class ColabCodeExecutor:
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(path, destination)
             uri = self._artifact_uri(execution_id, relative)
-            collected.append(
-                {
-                    "artifact_id": f"artifact-{uuid.uuid4().hex}",
-                    "name": relative.as_posix(),
-                    "mime_type": None,
-                    "uri": uri,
-                }
-            )
+            collected.append({
+                "artifact_id": f"artifact-{uuid.uuid4().hex}",
+                "name": relative.as_posix(),
+                "mime_type": None,
+                "uri": uri,
+            })
         return collected
 
     def _artifact_uri(self, execution_id: str, relative: Path) -> str:
@@ -316,16 +332,9 @@ class ColabCodeExecutor:
         return f"artifact://{execution_id}/{encoded}"
 
     @staticmethod
-    def _result(
-        *,
-        execution_id: str,
-        status: str,
-        stdout: str,
-        stderr: str,
-        exit_code: int | None,
-        duration_ms: int,
-        artifacts: list[dict[str, Any]] | None = None,
-    ) -> dict[str, Any]:
+    def _result(*, execution_id: str, status: str, stdout: str, stderr: str,
+                exit_code: int | None, duration_ms: int,
+                artifacts: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         return {
             "execution_id": execution_id,
             "status": status,
@@ -350,7 +359,6 @@ class RuntimeColabHTTPServer(ThreadingHTTPServer):
 
 
 def serve_forever(config: ExecutionServiceConfig | None = None) -> None:
-    """Start the authenticated execution service until interrupted."""
     runtime_config = config or ExecutionServiceConfig()
     server = RuntimeColabHTTPServer((runtime_config.bind_host, runtime_config.port), runtime_config)
     print(f"Universal Agent Runtime Colab service listening on {runtime_config.bind_host}:{runtime_config.port}")
