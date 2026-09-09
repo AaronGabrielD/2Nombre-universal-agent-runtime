@@ -140,8 +140,12 @@ def _plan_from_dict(data: dict[str, Any]) -> ArchitecturePlan:
             )
         )
 
+    plan_id = data.get("plan_id") or f"plan-{uuid.uuid4().hex}"
+    if not isinstance(plan_id, str) or not plan_id.strip():
+        raise ValueError("plan_id must be a non-empty string")
+
     return ArchitecturePlan(
-        plan_id=_required_str(data, "plan_id") or str(uuid.uuid4()),
+        plan_id=plan_id.strip(),
         objective=_required_str(data, "objective"),
         assumptions=_strings(data.get("assumptions"), "assumptions"),
         constraints=_strings(data.get("constraints"), "constraints"),
