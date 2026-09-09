@@ -23,6 +23,7 @@ This file tracks the implementation order as the repository evolves beyond the o
 - M16 — Tool Authorization + Gate C service
 - M17 — Session Concurrency Hardening
 - M18 — Controlled Parallel Worker Execution
+- M19 — Tool Registry orchestration + Gate C pause/resume
 
 ## Current integrated path
 
@@ -32,6 +33,8 @@ User / Chainlit
   -> M04 Architect
   -> Gate A (M05)
   -> M06 Worker Factory + Dependency Batches
+  -> M07 Tool Registry + M16 Tool Authorization
+  -> Gate C when required
   -> M14 CrewAI Worker Adapter
   -> M13 Worker Runtime Adapter
   -> M08 Execution Gateway
@@ -42,16 +45,13 @@ User / Chainlit
   -> Completed | Revision | Rejected
 
 Cross-cutting controls:
-  M07 Tool Registry
-  M16 Tool Authorization / Gate C
   M17 Concurrent Session Writes
   M18 Bounded Parallel Execution
 ```
 
 ## Intentionally not complete yet
 
-- Rich M07 tool invocation integration from workers.
-- Full Gate C pause/resume lifecycle inside the integrated orchestrator.
+- Direct tool-handler invocation from workers; M07/M16 currently authorize declarations and preserve M08 as the execution boundary.
 - Persistent production data layer.
 - Production authentication/authorization configuration for Chainlit.
 - Deployment adapter and public hosting configuration.
@@ -60,8 +60,8 @@ Cross-cutting controls:
 
 ## Next engineering priority
 
-1. Integrate M07 capability/tool validation into M15 before worker execution.
-2. Add an explicit Gate C pause/resume lifecycle for risky tools.
-3. Add real integration tests using a local HTTP Colab-service double.
-4. Design provider-agnostic persistent run storage.
-5. Harden production authentication, deployment, and execution isolation.
+1. M20 — End-to-end HTTP integration tests for M08 ↔ M12.
+2. Design provider-agnostic persistent run storage.
+3. Harden production authentication and deployment.
+4. Strengthen execution isolation/sandbox policy.
+5. Perform live cloud validation with free-tier-compatible providers.
