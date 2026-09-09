@@ -5,6 +5,14 @@ from dataclasses import dataclass, field, fields, is_dataclass
 from enum import Enum, StrEnum
 from typing import Any
 
+from .contracts_validation import (
+    require_non_empty_string,
+    require_non_negative_integer,
+    require_object_mapping,
+    require_positive_integer,
+    require_string_mapping,
+    require_string_sequence,
+)
 from .exceptions import ContractValidationError
 
 
@@ -25,10 +33,18 @@ class WorkerSpec:
     can_request_human_input: bool = True
 
     def validate(self) -> None:
-        if not self.worker_id.strip(): raise ContractValidationError("worker_id cannot be empty")
-        if not self.role.strip(): raise ContractValidationError(f"Worker {self.worker_id}: role cannot be empty")
-        if not self.mission.strip(): raise ContractValidationError(f"Worker {self.worker_id}: mission cannot be empty")
-        if self.worker_id in self.dependencies: raise ContractValidationError(f"Worker {self.worker_id} cannot depend on itself")
+        require_non_empty_string("worker_id", self.worker_id)
+        require_non_empty_string(f"Worker {self.worker_id}: role", self.role)
+        require_non_empty_string(f"Worker {self.worker_id}: mission", self.mission)
+        require_string_sequence(f"Worker {self.worker_id}: deliverables", self.deliverables)
+        require_string_sequence(f"Worker {self.worker_id}: required_tools", self.required_tools)
+        require_string_sequence(f"Worker {self.worker_id}: dependencies", self.dependencies)
+        if not isinstance(self.can_request_human_input, bool):
+            raise ContractValidationError(
+                f"Worker {self.worker_id}: can_request_human_input must be a boolean"
+            )
+        if self.worker_id in self.dependencies:
+            raise ContractValidationError(f"Worker {self.worker_id} cannot depend on itself")
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,16 +59,32 @@ class ArchitecturePlan:
     workers: tuple[WorkerSpec, ...] = ()
 
     def validate(self, *, max_workers: int = 4) -> None:
-        if not self.plan_id.strip(): raise ContractValidationError("plan_id cannot be empty")
-        if not self.objective.strip(): raise ContractValidationError("objective cannot be empty")
-        if not self.workers: raise ContractValidationError("ArchitecturePlan requires at least one worker")
-        if len(self.workers) > max_workers: raise ContractValidationError(f"ArchitecturePlan requested {len(self.workers)} workers; maximum is {max_workers}")
+        require_non_empty_string("plan_id", self.plan_id)
+        require_non_empty_string("objective", self.objective)
+        require_positive_integer("max_workers", max_workers)
+        require_string_sequence("assumptions", self.assumptions)
+        require_string_sequence("constraints", self.constraints)
+        require_string_sequence("acceptance_criteria", self.acceptance_criteria)
+        require_string_sequence("risks", self.risks)
+        require_string_sequence("required_capabilities", self.required_capabilities)
+        if not isinstance(self.workers, (tuple, list)) or not self.workers:
+            raise ContractValidationError("ArchitecturePlan requires at least one worker")
+        if len(self.workers) > max_workers:
+            raise ContractValidationError(
+                f"ArchitecturePlan requested {len(self.workers)} workers; maximum is {max_workers}"
+            )
+        if any(not isinstance(worker, WorkerSpec) for worker in self.workers):
+            raise ContractValidationError("ArchitecturePlan workers must be WorkerSpec instances")
         ids = {worker.worker_id for worker in self.workers}
-        if len(ids) != len(self.workers): raise ContractValidationError("Worker IDs must be unique")
+        if len(ids) != len(self.workers):
+            raise ContractValidationError("Worker IDs must be unique")
         for worker in self.workers:
             worker.validate()
             missing = set(worker.dependencies) - ids
-            if missing: raise ContractValidationError(f"Worker {worker.worker_id} has unknown dependencies: {sorted(missing)}")
+            if missing:
+                raise ContractValidationError(
+                    f"Worker {worker.worker_id} has unknown dependencies: {sorted(missing)}"
+                )
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,8 +96,11 @@ class TaskSpec:
     required_tools: tuple[str, ...] = ()
 
     def validate(self) -> None:
-        for name, value in (("task_id", self.task_id), ("worker_id", self.worker_id), ("description", self.description), ("expected_output", self.expected_output)):
-            if not value.strip(): raise ContractValidationError(f"{name} cannot be empty")
+        require_non_empty_string("task_id", self.task_id)
+        require_non_empty_string("worker_id", self.worker_id)
+        require_non_empty_string("description", self.description)
+        require_non_empty_string("expected_output", self.expected_output)
+        require_string_sequence("required_tools", self.required_tools)
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,8 +115,24 @@ class ToolSpec:
     available: bool = True
 
     def validate(self) -> None:
-        if not self.tool_id.strip() or not self.name.strip(): raise ContractValidationError("Tool ID and name are required")
-        if self.risk_level == RiskLevel.HIGH and not self.requires_human_approval: raise ContractValidationError(f"High-risk tool {self.tool_id} must require human approval")
+        require_non_empty_string("tool_id", self.tool_id)
+        require_non_empty_string("name", self.name)
+        require_non_empty_string("description", self.description)
+        require_object_mapping("input_schema", self.input_schema)
+        require_object_mapping("output_schema", self.output_schema)
+        if not isinstance(self.risk_level, RiskLevel):
+            try:
+                RiskLevel(self.risk_level)
+            except (TypeError, ValueError) as exc:
+                raise ContractValidationError("risk_level must be low, medium, or high") from exc
+        if not isinstance(self.requires_human_approval, bool):
+            raise ContractValidationError("requires_human_approval must be a boolean")
+        if not isinstance(self.available, bool):
+            raise ContractValidationError("available must be a boolean")
+        if self.risk_level == RiskLevel.HIGH and not self.requires_human_approval:
+            raise ContractValidationError(
+                f"High-risk tool {self.tool_id} must require human approval"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,9 +147,21 @@ class ExecutionRequest:
     environment: dict[str, str] = field(default_factory=dict)
 
     def validate(self, *, max_timeout_seconds: int = 3600) -> None:
-        if not self.execution_id.strip() or not self.run_id.strip() or not self.worker_id.strip(): raise ContractValidationError("execution_id, run_id and worker_id are required")
-        if not self.language.strip() or not self.code.strip(): raise ContractValidationError("language and code are required")
-        if not 1 <= self.timeout_seconds <= max_timeout_seconds: raise ContractValidationError(f"timeout_seconds must be between 1 and {max_timeout_seconds}")
+        require_non_empty_string("execution_id", self.execution_id)
+        require_non_empty_string("run_id", self.run_id)
+        require_non_empty_string("worker_id", self.worker_id)
+        require_non_empty_string("language", self.language)
+        require_non_empty_string("code", self.code)
+        require_positive_integer("max_timeout_seconds", max_timeout_seconds)
+        if isinstance(self.timeout_seconds, bool) or not isinstance(self.timeout_seconds, int):
+            raise ContractValidationError("timeout_seconds must be an integer")
+        if not 1 <= self.timeout_seconds <= max_timeout_seconds:
+            raise ContractValidationError(
+                f"timeout_seconds must be between 1 and {max_timeout_seconds}"
+            )
+        if not isinstance(self.needs_network, bool):
+            raise ContractValidationError("needs_network must be a boolean")
+        require_string_mapping("environment", self.environment)
 
 
 class ExecutionStatus(StrEnum):
@@ -116,6 +179,14 @@ class ArtifactRef:
     mime_type: str | None = None
     uri: str | None = None
 
+    def validate(self) -> None:
+        require_non_empty_string("artifact_id", self.artifact_id)
+        require_non_empty_string("name", self.name)
+        if self.mime_type is not None:
+            require_non_empty_string("mime_type", self.mime_type)
+        if self.uri is not None:
+            require_non_empty_string("uri", self.uri)
+
 
 @dataclass(frozen=True, slots=True)
 class ExecutionResult:
@@ -127,6 +198,28 @@ class ExecutionResult:
     duration_ms: int
     artifacts: tuple[ArtifactRef, ...] = ()
     backend: str = "unknown"
+
+    def validate(self) -> None:
+        require_non_empty_string("execution_id", self.execution_id)
+        if not isinstance(self.status, ExecutionStatus):
+            try:
+                ExecutionStatus(self.status)
+            except (TypeError, ValueError) as exc:
+                raise ContractValidationError("status is not a valid ExecutionStatus") from exc
+        if self.exit_code is not None and (
+            isinstance(self.exit_code, bool) or not isinstance(self.exit_code, int)
+        ):
+            raise ContractValidationError("exit_code must be an integer or None")
+        if not isinstance(self.stdout, str) or not isinstance(self.stderr, str):
+            raise ContractValidationError("stdout and stderr must be strings")
+        require_non_negative_integer("duration_ms", self.duration_ms)
+        if not isinstance(self.artifacts, (tuple, list)):
+            raise ContractValidationError("artifacts must be a tuple/list of ArtifactRef")
+        for artifact in self.artifacts:
+            if not isinstance(artifact, ArtifactRef):
+                raise ContractValidationError("artifacts must contain ArtifactRef instances")
+            artifact.validate()
+        require_non_empty_string("backend", self.backend)
 
 
 class HumanDecisionType(StrEnum):
@@ -145,6 +238,19 @@ class HumanDecision:
     timestamp: str
     actor: str = "human"
 
+    def validate(self) -> None:
+        require_non_empty_string("gate_id", self.gate_id)
+        require_non_empty_string("run_id", self.run_id)
+        if not isinstance(self.decision, HumanDecisionType):
+            try:
+                HumanDecisionType(self.decision)
+            except (TypeError, ValueError) as exc:
+                raise ContractValidationError("decision is not a valid HumanDecisionType") from exc
+        if not isinstance(self.feedback, str):
+            raise ContractValidationError("feedback must be a string")
+        require_non_empty_string("timestamp", self.timestamp)
+        require_non_empty_string("actor", self.actor)
+
 
 @dataclass(frozen=True, slots=True)
 class FinalResult:
@@ -155,6 +261,22 @@ class FinalResult:
     tests: tuple[dict[str, Any], ...] = ()
     issues: tuple[str, ...] = ()
     recommended_next_action: str = ""
+
+    def validate(self) -> None:
+        require_non_empty_string("run_id", self.run_id)
+        require_non_empty_string("status", self.status)
+        require_non_empty_string("summary", self.summary)
+        if not isinstance(self.deliverables, (tuple, list)):
+            raise ContractValidationError("deliverables must be a tuple/list")
+        if not isinstance(self.tests, (tuple, list)):
+            raise ContractValidationError("tests must be a tuple/list")
+        require_string_sequence("issues", self.issues)
+        if not isinstance(self.recommended_next_action, str):
+            raise ContractValidationError("recommended_next_action must be a string")
+        for name, values in (("deliverables", self.deliverables), ("tests", self.tests)):
+            for index, item in enumerate(values):
+                if not isinstance(item, dict):
+                    raise ContractValidationError(f"{name}[{index}] must be an object mapping")
 
 
 def to_dict(value: Any) -> Any:
