@@ -1,34 +1,27 @@
-"""Minimal Chainlit presentation adapter for the Universal Agent Runtime.
+"""Chainlit presentation adapter for the Universal Agent Runtime.
 
-UI callbacks translate user actions into decisions for M05. They never mutate
-workflow state directly and never execute tools or code.
+UI callbacks translate user actions into runtime operations. They do not own
+workflow state, provider logic, tool execution, or execution-backend internals.
 """
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
 import chainlit as cl
 
-from app.architect.service import UniversalArchitect
 from app.core.contracts import HumanDecisionType, to_dict
-from app.core.config import get_settings
 from app.core.states import WorkflowState
-from app.identity import IdentityService, RunAccessDeniedError, RunAuthorizationService, SQLiteUserRepository
 from app.intake.models import IntakeFile
-from app.llm.gemini import GeminiAdapter
-from app.runtime.service import RuntimeCoordinator, RuntimeCoordinatorError
+from app.runtime import RuntimeApplication, RuntimeCoordinatorError, build_runtime
+from app.identity import RunAccessDeniedError
 
 
-settings = get_settings()
-_coordinator = RuntimeCoordinator(
-    architect=UniversalArchitect(GeminiAdapter(settings), settings=settings),
-)
-_identity_service = IdentityService(
-    SQLiteUserRepository(os.getenv("UAR_IDENTITY_DB_PATH", "runtime_users.db"))
-)
-_run_authorization = RunAuthorizationService()
+_runtime: RuntimeApplication = build_runtime()
+_coordinator = _runtime.coordinator
+_orchestrator = _runtime.orchestrator
+_identity_service = _runtime.identity
+_run_authorization = _runtime.identity_service if hasattr(_runtime, "identity_service") else None
 
 
 @cl.password_auth_callback
@@ -68,13 +61,19 @@ def _require_run_access(run_id: str):
     identity = _identity()
     context = _coordinator.sessions.get_context(run_id)
     try:
-        _run_authorization.require_access(identity, context)
+        _run_authorization.require_access(identity, context)  # type: ignore[union-attr]
     except RunAccessDeniedError as exc:
         raise RuntimeCoordinatorError(str(exc)) from exc
     return context
 
 
-def _actions(gate_id: str, run_id: str, decisions: tuple[HumanDecisionType, ...]):
+def _actions(
+    gate_id: str,
+    run_id: str,
+    decisions: tuple[HumanDecisionType, ...],
+    *,
+    worker_id: str | None = None,
+):
     labels = {
         HumanDecisionType.APPROVE: "✅ Approve",
         HumanDecisionType.MODIFY: "✏️ Modify",
@@ -84,11 +83,86 @@ def _actions(gate_id: str, run_id: str, decisions: tuple[HumanDecisionType, ...]
     return [
         cl.Action(
             name="runtime_gate_decision",
-            payload={"gate_id": gate_id, "run_id": run_id, "decision": decision.value},
+            payload={
+                "gate_id": gate_id,
+                "run_id": run_id,
+                "worker_id": worker_id,
+                "decision": decision.value,
+            },
             label=labels[decision],
         )
         for decision in decisions
     ]
+
+
+async def _show_architecture_gate(checkpoint) -> None:
+    await cl.Message(
+        content=(
+            "## Arquitectura propuesta\n\n"
+            f"```json\n{_json_text(to_dict(checkpoint.plan))}\n```\n\n"
+            "Gate A: la ejecución está bloqueada hasta tu decisión."
+        ),
+        author="Architect",
+        actions=_actions(
+            checkpoint.gate_id,
+            checkpoint.run_id,
+            (
+                HumanDecisionType.APPROVE,
+                HumanDecisionType.MODIFY,
+                HumanDecisionType.REJECT,
+                HumanDecisionType.CLARIFY,
+            ),
+        ),
+    ).send()
+
+
+async def _run_orchestration(run_id: str) -> None:
+    try:
+        result = await cl.make_async(_orchestrator.execute_run)(run_id)
+    except Exception as exc:
+        await cl.Message(content=f"No se pudo ejecutar el run: `{exc}`", author="Runtime").send()
+        return
+
+    if result.pending_gate_id:
+        gate = _runtime.approvals.get_gate(result.pending_gate_id)
+        await cl.Message(
+            content=(
+                "## Gate C — autorización requerida\n\n"
+                f"El worker `{result.pending_worker_id}` solicita acceso a una herramienta de riesgo.\n\n"
+                f"```json\n{_json_text(gate.context)}\n```"
+            ),
+            author="Human Approval",
+            actions=_actions(
+                gate.gate_id,
+                run_id,
+                gate.allowed_decisions,
+                worker_id=result.pending_worker_id,
+            ),
+        ).send()
+        return
+
+    if result.qa_result is not None:
+        await cl.Message(
+            content=(
+                f"### Supervisor / QA\n\n**{result.qa_result.status.value.upper()}**\n\n"
+                f"{result.qa_result.summary}"
+            ),
+            author="Supervisor",
+        ).send()
+
+    if result.final_gate_id:
+        gate = _runtime.approvals.get_gate(result.final_gate_id)
+        await cl.Message(
+            content="## Gate D — aprobación final\n\nEl Supervisor aprobó el resultado. La finalización sigue bloqueada hasta tu decisión.",
+            author="Human Approval",
+            actions=_actions(gate.gate_id, run_id, gate.allowed_decisions),
+        ).send()
+    elif result.qa_result is not None:
+        state = _coordinator.sessions.get_context(run_id).state
+        await cl.Message(
+            content=f"Estado del run: `{state.value}`. QA no pasó; el flujo queda en revisión.",
+            author="Runtime",
+        ).send()
 
 
 @cl.on_chat_start
@@ -98,8 +172,8 @@ async def on_chat_start() -> None:
     await cl.Message(
         content=(
             f"Universal Agent Runtime listo para `{identity.username}` ({identity.role.value}). "
-            "Describe el objetivo del trabajo. Los cambios de arquitectura y la finalización "
-            "siempre pasan por aprobación humana."
+            "Describe el objetivo del trabajo. Los cambios de arquitectura, acciones de riesgo "
+            "y la finalización siempre pasan por aprobación humana."
         ),
         author="Runtime",
     ).send()
@@ -124,7 +198,7 @@ async def on_message(message: cl.Message) -> None:
             mime = getattr(element, "mime", None)
             if not path:
                 continue
-            size = os.path.getsize(path)
+            size = Path(path).stat().st_size
             inline_text = None
             if (mime or "").lower().startswith("text/") and size <= 256 * 1024:
                 inline_text = Path(path).read_text(encoding="utf-8")
@@ -143,7 +217,7 @@ async def on_message(message: cl.Message) -> None:
             result = _coordinator.start_run(
                 message.content,
                 files=tuple(files),
-                metadata=_run_authorization.owner_metadata(identity),
+                metadata=_run_authorization.owner_metadata(identity),  # type: ignore[union-attr]
                 inline_text_by_name=inline_text_by_name,
             )
             cl.user_session.set("run_id", result.run_id)
@@ -165,38 +239,18 @@ async def on_message(message: cl.Message) -> None:
             ).send()
             return
 
-        await cl.Message(
-            content=(
-                "## Arquitectura propuesta\n\n"
-                f"```json\n{_json_text(to_dict(checkpoint.plan))}\n```\n\n"
-                "Gate A: la ejecución está bloqueada hasta tu decisión."
-            ),
-            author="Architect",
-            actions=_actions(
-                checkpoint.gate_id,
-                result.run_id,
-                (
-                    HumanDecisionType.APPROVE,
-                    HumanDecisionType.MODIFY,
-                    HumanDecisionType.REJECT,
-                    HumanDecisionType.CLARIFY,
-                ),
-            ),
-        ).send()
+        await _show_architecture_gate(checkpoint)
         return
 
     try:
-        state = _require_run_access(run_id).state
+        context = _require_run_access(run_id)
     except (RuntimeCoordinatorError, ValueError) as exc:
         await cl.Message(content=f"Acceso al run rechazado: `{exc}`", author="Runtime").send()
         cl.user_session.set("run_id", None)
         return
 
     await cl.Message(
-        content=(
-            f"El run activo es `{run_id}` y está en `{state.value}`. "
-            "El siguiente avance depende del componente de ejecución/supervisión que todavía estamos integrando."
-        ),
+        content=f"El run activo es `{run_id}` y está en `{context.state.value}`.",
         author="Runtime",
     ).send()
 
@@ -206,6 +260,7 @@ async def on_runtime_gate_decision(action: cl.Action) -> None:
     payload = action.payload or {}
     run_id = str(payload.get("run_id") or "")
     gate_id = str(payload.get("gate_id") or "")
+    worker_id = str(payload.get("worker_id") or "") or None
     decision_value = str(payload.get("decision") or "")
 
     if not run_id or not gate_id:
@@ -215,23 +270,62 @@ async def on_runtime_gate_decision(action: cl.Action) -> None:
     try:
         _require_run_access(run_id)
         decision = HumanDecisionType(decision_value)
-        gate = _coordinator.approvals.get_gate(gate_id)
+        gate = _runtime.approvals.get_gate(gate_id)
         if gate.run_id != run_id:
             raise RuntimeCoordinatorError("gate/run ownership mismatch")
 
-        if decision in {HumanDecisionType.MODIFY, HumanDecisionType.CLARIFY}:
-            response = await cl.AskUserMessage(
-                content="Escribe la modificación o aclaración que debe tener en cuenta el runtime:",
-                timeout=300,
+        if gate.kind == "TOOL_RISK":
+            if not worker_id:
+                raise RuntimeCoordinatorError("tool-risk gate is missing worker_id")
+            feedback = f"Human decision: {decision.value}"
+            response = await _maybe_request_feedback(decision)
+            if response:
+                feedback = response
+            result = await cl.make_async(_orchestrator.resume_after_tool_gate)(
+                run_id=run_id,
+                gate_id=gate_id,
+                decision=decision,
+                worker_id=worker_id,
+                feedback=feedback,
+                actor=_actor(),
+            )
+            await cl.Message(
+                content=f"Gate C resuelto como **{decision.value}**. Reanudando `{worker_id}`...",
+                author="Human Approval",
             ).send()
-            feedback = str((response or {}).get("output") or "").strip()
+            if result.pending_gate_id:
+                pending = _runtime.approvals.get_gate(result.pending_gate_id)
+                await cl.Message(
+                    content=f"El siguiente worker requiere autorización de riesgo: `{result.pending_worker_id}`.",
+                    author="Human Approval",
+                    actions=_actions(
+                        pending.gate_id,
+                        run_id,
+                        pending.allowed_decisions,
+                        worker_id=result.pending_worker_id,
+                    ),
+                ).send()
+            elif result.final_gate_id:
+                final_gate = _runtime.approvals.get_gate(result.final_gate_id)
+                await cl.Message(
+                    content="## Gate D — aprobación final\n\nEl Supervisor aprobó el resultado.",
+                    author="Human Approval",
+                    actions=_actions(final_gate.gate_id, run_id, final_gate.allowed_decisions),
+                ).send()
+            return
+
+        if gate.kind not in {"ARCHITECTURE", "FINAL"}:
+            raise RuntimeCoordinatorError(f"unsupported gate kind: {gate.kind}")
+
+        if decision in {HumanDecisionType.MODIFY, HumanDecisionType.CLARIFY}:
+            feedback = await _request_feedback()
             if not feedback:
                 await cl.Message(content="No se recibió feedback; no se aplicó la decisión.").send()
                 return
         else:
             feedback = f"Human decision: {decision.value}"
 
-        recorded = _coordinator.approvals.resolve_gate(
+        recorded = _runtime.approvals.resolve_gate(
             gate_id=gate_id,
             decision=decision,
             feedback=feedback,
@@ -239,10 +333,8 @@ async def on_runtime_gate_decision(action: cl.Action) -> None:
         )
         if gate.kind == "ARCHITECTURE":
             state = _coordinator.apply_architecture_decision(recorded)
-        elif gate.kind == "FINAL":
-            state = _coordinator.apply_final_decision(recorded)
         else:
-            raise RuntimeCoordinatorError(f"unsupported gate kind: {gate.kind}")
+            state = _coordinator.apply_final_decision(recorded)
     except (ValueError, RuntimeCoordinatorError, RunAccessDeniedError) as exc:
         await cl.Message(content=f"Decisión rechazada: `{exc}`", author="Runtime").send()
         return
@@ -252,12 +344,36 @@ async def on_runtime_gate_decision(action: cl.Action) -> None:
         author="Human Approval",
     ).send()
 
-    if state == WorkflowState.COMPLETED:
+    if gate.kind == "ARCHITECTURE":
+        if state == WorkflowState.EXECUTING:
+            await _run_orchestration(run_id)
+        elif state == WorkflowState.ARCHITECTING:
+            try:
+                checkpoint = await cl.make_async(_coordinator.build_architecture)(
+                    run_id,
+                    context={"human_feedback": feedback},
+                )
+                await _show_architecture_gate(checkpoint)
+            except Exception as exc:
+                await cl.Message(content=f"No se pudo reconstruir la arquitectura: `{exc}`", author="Runtime").send()
+    elif state == WorkflowState.COMPLETED:
         await cl.Message(content="✅ Run completado con aprobación humana final.", author="Runtime").send()
     elif state == WorkflowState.REVISION:
-        await cl.Message(content="🔄 El run vuelve a revisión; la siguiente etapa será replanificar.", author="Runtime").send()
+        await cl.Message(content="🔄 El run vuelve a revisión.", author="Runtime").send()
     elif state == WorkflowState.REJECTED:
         await cl.Message(content="🛑 El run fue rechazado y no continuará.", author="Runtime").send()
+
+
+async def _request_feedback() -> str:
+    response = await cl.AskUserMessage(
+        content="Escribe la modificación o aclaración que debe tener en cuenta el runtime:",
+        timeout=300,
+    ).send()
+    return str((response or {}).get("output") or "").strip()
+
+
+async def _maybe_request_feedback(decision: HumanDecisionType) -> str:
+    return ""
 
 
 def _json_text(value: object) -> str:
