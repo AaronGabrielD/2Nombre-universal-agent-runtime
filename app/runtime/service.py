@@ -16,6 +16,7 @@ from app.core.contracts import ArchitecturePlan, FinalResult, HumanDecision, Hum
 from app.core.states import WorkflowState
 from app.intake.models import IntakeFile, IntakeResult
 from app.intake.service import IntakeService
+from app.revision.service import RevisionService
 from app.session.manager import SessionManager
 from app.supervisor.models import QAResult, QAStatus
 
@@ -34,12 +35,7 @@ class ArchitectureCheckpoint:
 
 
 class RuntimeCoordinator:
-    """Coordinate the safe high-level lifecycle of a single runtime execution.
-
-    The coordinator is intentionally dependency-injected. It can therefore be
-    used by a future Chainlit UI, API server, CLI, or another presentation layer
-    without making those interfaces responsible for runtime invariants.
-    """
+    """Coordinate the safe high-level lifecycle of a single runtime execution."""
 
     def __init__(
         self,
@@ -48,11 +44,13 @@ class RuntimeCoordinator:
         intake_service: IntakeService | None = None,
         architect: UniversalArchitect | None = None,
         approval_engine: HumanApprovalEngine | None = None,
+        revision_service: RevisionService | None = None,
     ) -> None:
         self.sessions = session_manager or SessionManager()
         self.intake = intake_service or IntakeService(session_manager=self.sessions)
         self.architect = architect
         self.approvals = approval_engine or HumanApprovalEngine()
+        self.revisions = revision_service or RevisionService(session_manager=self.sessions)
 
     def start_run(
         self,
@@ -138,7 +136,12 @@ class RuntimeCoordinator:
         elif decision.decision == HumanDecisionType.REJECT:
             self.sessions.transition(decision.run_id, WorkflowState.REJECTED)
         elif decision.decision in {HumanDecisionType.MODIFY, HumanDecisionType.CLARIFY}:
-            self.sessions.transition(decision.run_id, WorkflowState.ARCHITECTING)
+            self.revisions.request_revision(
+                decision.run_id,
+                reason=f"Architecture {decision.decision.value}",
+                source="human",
+                feedback=decision.feedback,
+            )
         else:  # pragma: no cover - enum contract is exhaustive
             raise RuntimeCoordinatorError(f"Unsupported architecture decision: {decision.decision}")
         return self.sessions.get_context(decision.run_id).state
@@ -204,10 +207,38 @@ class RuntimeCoordinator:
             self.sessions.set_final_result(decision.run_id, final_result)
             self.sessions.transition(decision.run_id, WorkflowState.COMPLETED)
         elif decision.decision == HumanDecisionType.MODIFY:
-            self.sessions.transition(decision.run_id, WorkflowState.REVISION)
+            self.revisions.request_revision(
+                decision.run_id,
+                reason="Final result modification requested",
+                source="human",
+                feedback=decision.feedback,
+            )
         else:
             self.sessions.transition(decision.run_id, WorkflowState.REJECTED)
         return self.sessions.get_context(decision.run_id).state
+
+    def record_revision(
+        self,
+        run_id: str,
+        *,
+        reason: str,
+        source: str = "runtime",
+        feedback: str = "",
+    ):
+        """Record a recoverable revision through the canonical revision service."""
+        try:
+            return self.revisions.request_revision(
+                run_id,
+                reason=reason,
+                source=source,
+                feedback=feedback,
+            )
+        except ValueError as exc:
+            raise RuntimeCoordinatorError(str(exc)) from exc
+
+    def list_revisions(self, run_id: str):
+        """Return the durable revision history for a run."""
+        return self.revisions.list_revisions(run_id)
 
     def _validate_recorded_decision(self, decision: HumanDecision) -> None:
         """Ensure a decision is exactly the immutable record produced by the gate engine."""
