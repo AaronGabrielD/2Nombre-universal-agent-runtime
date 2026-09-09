@@ -55,14 +55,8 @@ class DockerExecutionBackend(ExecutionBackend):
     def info(self) -> ExecutionBackendInfo:
         return ExecutionBackendInfo(
             backend_id="docker",
-            description="Hardened Docker execution backend",
+            name="Hardened Docker execution backend",
             available=shutil.which(self.docker_binary) is not None,
-            metadata={
-                "isolation": "container",
-                "network_default": "disabled",
-                "image": self.image,
-                "static_policy_still_required": "true",
-            },
         )
 
     def execute(self, request: ExecutionRequest) -> ExecutionResult:
