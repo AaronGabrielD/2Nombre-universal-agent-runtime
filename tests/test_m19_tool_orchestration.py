@@ -145,7 +145,7 @@ class M19ToolOrchestrationTests(unittest.TestCase):
         self.assertEqual(sessions.get_context(run_id).state, WorkflowState.WAITING_FINAL_APPROVAL)
         self.assertEqual(CountingBackend.calls, 1)
 
-    def test_rejected_gate_c_stops_without_execution(self):
+    def test_rejected_gate_c_records_revision_and_stops_without_execution(self):
         orchestrator, sessions, run_id, _ = make_risky_orchestrator()
         paused = orchestrator.execute_run(run_id)
         rejected = orchestrator.resume_after_tool_gate(
@@ -156,8 +156,9 @@ class M19ToolOrchestrationTests(unittest.TestCase):
             feedback="not approved",
         )
         self.assertIsNone(rejected.qa_result)
-        self.assertEqual(sessions.get_context(run_id).state, WorkflowState.REVISION)
+        self.assertEqual(sessions.get_context(run_id).state, WorkflowState.ARCHITECTING)
         self.assertEqual(CountingBackend.calls, 0)
+        self.assertEqual(len(orchestrator.coordinator.list_revisions(run_id)), 1)
 
     def test_unknown_tool_fails_closed(self):
         orchestrator, sessions, run_id, _ = make_risky_orchestrator()
