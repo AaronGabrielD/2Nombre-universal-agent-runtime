@@ -6,9 +6,9 @@ small local deployment without adding a database service dependency.
 """
 from __future__ import annotations
 
+import pickle
 import sqlite3
 from copy import deepcopy
-import pickle
 from threading import RLock
 from typing import Protocol
 
@@ -31,6 +31,7 @@ class SessionRepository(Protocol):
     def save(self, record: SessionRecord) -> SessionRecord: ...
     def delete(self, run_id: str) -> None: ...
     def contains(self, run_id: str) -> bool: ...
+    def list(self) -> tuple[SessionRecord, ...]: ...
 
 
 class InMemorySessionRepository:
@@ -74,6 +75,10 @@ class InMemorySessionRepository:
     def contains(self, run_id: str) -> bool:
         with self._lock:
             return run_id in self._sessions
+
+    def list(self) -> tuple[SessionRecord, ...]:
+        with self._lock:
+            return tuple(deepcopy(self._sessions[run_id]) for run_id in sorted(self._sessions))
 
 
 class SQLiteSessionRepository:
@@ -132,13 +137,7 @@ class SQLiteSessionRepository:
                 raise SessionRepositoryError(f"failed to read session {run_id}: {exc}") from exc
         if row is None:
             raise SessionNotFoundError(f"Unknown run_id: {run_id}")
-        try:
-            record = pickle.loads(row[0])
-        except (pickle.PickleError, EOFError, AttributeError, ValueError, TypeError) as exc:
-            raise SessionRepositoryError(f"stored session {run_id} is corrupt") from exc
-        if not isinstance(record, SessionRecord):
-            raise SessionRepositoryError(f"stored session {run_id} has an invalid record type")
-        return record
+        return self._decode(run_id, row[0])
 
     def save(self, record: SessionRecord) -> SessionRecord:
         run_id = record.context.run_id
@@ -183,3 +182,24 @@ class SQLiteSessionRepository:
             except sqlite3.Error as exc:
                 raise SessionRepositoryError(f"failed to check session {run_id}: {exc}") from exc
         return row is not None
+
+    def list(self) -> tuple[SessionRecord, ...]:
+        with self._lock:
+            try:
+                with sqlite3.connect(self._database_path) as connection:
+                    rows = connection.execute(
+                        "SELECT run_id, payload FROM sessions ORDER BY run_id"
+                    ).fetchall()
+            except sqlite3.Error as exc:
+                raise SessionRepositoryError(f"failed to list sessions: {exc}") from exc
+        return tuple(self._decode(str(run_id), payload) for run_id, payload in rows)
+
+    @staticmethod
+    def _decode(run_id: str, payload: bytes) -> SessionRecord:
+        try:
+            record = pickle.loads(payload)
+        except (pickle.PickleError, EOFError, AttributeError, ValueError, TypeError) as exc:
+            raise SessionRepositoryError(f"stored session {run_id} is corrupt") from exc
+        if not isinstance(record, SessionRecord):
+            raise SessionRepositoryError(f"stored session {run_id} has an invalid record type")
+        return record

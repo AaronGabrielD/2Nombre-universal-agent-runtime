@@ -5,9 +5,9 @@ from copy import deepcopy
 from threading import RLock
 from typing import Any
 
-from app.core.contracts import ArchitecturePlan, ArtifactRef, ExecutionResult, FinalResult, HumanDecision
+from app.core.contracts import ArchitecturePlan, ArtifactRef, ExecutionResult, FinalResult, HumanDecision, to_dict
 from app.core.models import EventRecord, RunContext
-from app.core.states import WorkflowState
+from app.core.states import TERMINAL_STATES, WorkflowState
 
 from .models import SessionMessage, SessionRecord, WorkerOutput
 from .repository import InMemorySessionRepository, SessionRepository
@@ -33,6 +33,20 @@ class SessionManager:
     def get_context(self, run_id: str) -> RunContext:
         with self._lock:
             return deepcopy(self.repository.get(run_id).context)
+
+    def list_sessions(self) -> tuple[SessionRecord, ...]:
+        """Return isolated snapshots of every persisted session."""
+        with self._lock:
+            return tuple(deepcopy(record) for record in self.repository.list())
+
+    def list_recoverable_sessions(self) -> tuple[SessionRecord, ...]:
+        """Return non-terminal sessions that remain candidates for post-restart recovery."""
+        with self._lock:
+            return tuple(
+                deepcopy(record)
+                for record in self.repository.list()
+                if record.context.state not in TERMINAL_STATES
+            )
 
     def transition(self, run_id: str, target: WorkflowState) -> RunContext:
         with self._lock:
