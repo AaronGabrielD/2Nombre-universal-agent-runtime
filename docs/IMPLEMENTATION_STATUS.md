@@ -26,11 +26,13 @@ This file tracks the implementation order as the repository evolves beyond the o
 - M19 — Tool Registry orchestration + Gate C pause/resume
 - M20 — HTTP integration test coverage (M08 ↔ M12)
 - M21 — Persistent session storage via SQLite repository
+- M22 — Chainlit authentication hardening
 
 ## Current integrated path
 
 ```text
 User / Chainlit
+  -> M22 Authenticated UI
   -> M02 Intake
   -> M04 Architect
   -> Gate A (M05)
@@ -51,21 +53,23 @@ Cross-cutting controls:
   M17 Concurrent Session Writes
   M18 Bounded Parallel Execution
   M20 HTTP Contract Integration Tests
+  M22 UI Authentication
 ```
 
 ## Intentionally not complete yet
 
 - Direct tool-handler invocation from workers; M07/M16 authorize declarations and preserve M08 as the execution boundary.
+- Multi-user durable identity management beyond the environment-backed bootstrap account.
 - Provider-neutral durable storage backends beyond SQLite.
-- Production authentication/authorization configuration for Chainlit.
-- Deployment adapter and public hosting configuration.
+- Production deployment adapter and public hosting configuration.
 - Stronger execution sandbox than the Colab VM boundary.
 - Full live Colab + Chainlit + Gemini end-to-end validation in a real cloud runtime.
 - Schema-versioned durable storage migration strategy.
 
 ## Next engineering priority
 
-1. M22 — Production authentication and deployment hardening.
-2. M23 — Stronger execution isolation/sandbox policy.
-3. M24 — Live cloud validation with free-tier-compatible providers.
-4. M25 — Additional durable backends and schema-versioned migrations.
+1. M23 — Stronger execution isolation and sandbox policy.
+2. M24 — Live cloud validation with free-tier-compatible providers.
+3. M25 — Provider-neutral deployment adapter.
+4. M26 — Multi-user durable identity and authorization.
+5. M27 — Schema-versioned persistence migrations.
