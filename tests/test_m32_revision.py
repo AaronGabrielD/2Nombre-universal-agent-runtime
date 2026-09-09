@@ -13,9 +13,20 @@ class M32RevisionTests(unittest.TestCase):
         self.service = RevisionService(session_manager=self.sessions)
 
     def _enter_revision(self):
-        self.sessions.transition(self.run.run_id, WorkflowState.INTAKE)
-        self.sessions.transition(self.run.run_id, WorkflowState.ARCHITECTING)
-        self.sessions.transition(self.run.run_id, WorkflowState.REVISION)
+        run_id = self.run.run_id
+        self.sessions.transition(run_id, WorkflowState.INTAKE)
+        self.sessions.transition(run_id, WorkflowState.ARCHITECTING)
+        self.sessions.transition(run_id, WorkflowState.WAITING_ARCHITECT_APPROVAL)
+        self.sessions.transition(run_id, WorkflowState.EXECUTING)
+        self.sessions.transition(run_id, WorkflowState.SUPERVISING)
+        self.sessions.transition(run_id, WorkflowState.REVISION)
+
+    def _complete_revision_cycle_to_revision(self):
+        run_id = self.run.run_id
+        self.sessions.transition(run_id, WorkflowState.WAITING_ARCHITECT_APPROVAL)
+        self.sessions.transition(run_id, WorkflowState.EXECUTING)
+        self.sessions.transition(run_id, WorkflowState.SUPERVISING)
+        self.sessions.transition(run_id, WorkflowState.REVISION)
 
     def test_revision_from_revision_moves_to_architecting_and_tracks_attempt(self):
         self._enter_revision()
@@ -49,9 +60,7 @@ class M32RevisionTests(unittest.TestCase):
     def test_second_revision_increments_from_session_history(self):
         self._enter_revision()
         self.service.request_revision(self.run.run_id, reason="first", source="qa")
-        self.sessions.transition(self.run.run_id, WorkflowState.WAITING_ARCHITECT_APPROVAL)
-        self.sessions.transition(self.run.run_id, WorkflowState.ARCHITECTING)
-        self.sessions.transition(self.run.run_id, WorkflowState.REVISION)
+        self._complete_revision_cycle_to_revision()
         second = RevisionService(session_manager=self.sessions).request_revision(
             self.run.run_id, reason="second", source="qa"
         )
