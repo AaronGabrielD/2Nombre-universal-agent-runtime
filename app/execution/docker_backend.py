@@ -1,6 +1,6 @@
 """Optional Docker execution backend with defense-in-depth isolation.
 
-The backend is deliberately behind the M08 ExecutionGateway contract. It uses
+The backend is deliberately behind the M08 ExecutionBackend contract. It uses
 Docker's Linux isolation primitives when the Docker CLI is available and fails
 closed when it is not.
 """
@@ -77,6 +77,7 @@ class DockerExecutionBackend(ExecutionBackend):
 
         with TemporaryDirectory(prefix=f"uar-docker-{request.execution_id[:12]}-") as temp:
             root = Path(temp).resolve()
+            root.chmod(0o777)
             script = root / "main.py"
             script.write_text(request.code, encoding="utf-8")
             command = self._docker_command(request, root)
