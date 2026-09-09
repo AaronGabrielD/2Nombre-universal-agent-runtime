@@ -17,8 +17,11 @@ class RevisionServiceError(ValueError):
 class RevisionService:
     """Track recoverable revision records in the durable session history."""
 
-    def __init__(self, *, session_manager: SessionManager) -> None:
+    def __init__(self, *, session_manager: SessionManager, max_revisions: int = 3) -> None:
+        if isinstance(max_revisions, bool) or not isinstance(max_revisions, int) or max_revisions <= 0:
+            raise RevisionServiceError("max_revisions must be a positive integer")
         self.sessions = session_manager
+        self.max_revisions = max_revisions
         self._lock = RLock()
 
     def request_revision(
@@ -48,11 +51,17 @@ class RevisionService:
                 raise RevisionServiceError(f"cannot request revision from state {state.value}")
 
             snapshot = self.sessions.snapshot(run_id)
-            attempt = 1 + sum(
+            revision_count = sum(
                 1
                 for message in snapshot.messages
                 if message.metadata.get("phase") == "revision"
             )
+            if revision_count >= self.max_revisions:
+                raise RevisionServiceError(
+                    f"revision limit reached ({self.max_revisions})"
+                )
+
+            attempt = revision_count + 1
             revision = RevisionRequest(
                 run_id=run_id,
                 reason=reason,
