@@ -1,16 +1,5 @@
 #!/usr/bin/env python3
-"""Validate a configured Universal Agent Runtime deployment from outside it.
-
-Required environment:
-  UAR_SMOKE_BASE_URL   public/reachable base URL of the runtime service
-  RUNTIME_EXECUTION_TOKEN  bearer token accepted by /execute
-
-Optional:
-  M29_TIMEOUT_SECONDS (default 30)
-  GEMINI_API_KEY + GEMINI_MODEL_WORKER to validate the configured Gemini API
-
-The script never prints secret values.
-"""
+"""Validate a configured Universal Agent Runtime deployment from outside it."""
 from __future__ import annotations
 
 import argparse
@@ -39,6 +28,8 @@ def request_json(url: str, *, method: str = "GET", token: str | None = None, pay
         except json.JSONDecodeError:
             body = {"error": raw[:500]}
         return exc.code, body
+    except urllib.error.URLError as exc:
+        return 0, {"error": f"transport error: {exc.reason}"}
 
 
 def run_smoke(base_url: str, token: str, timeout: int) -> int:
@@ -59,9 +50,7 @@ def run_smoke(base_url: str, token: str, timeout: int) -> int:
         "timeout_seconds": min(timeout, 30),
         "needs_network": False,
     }
-    status, result = request_json(
-        f"{base_url}/execute", method="POST", token=token, payload=payload, timeout=timeout + 5
-    )
+    status, result = request_json(f"{base_url}/execute", method="POST", token=token, payload=payload, timeout=timeout + 5)
     if status != 200 or result.get("status") != "success":
         print(f"FAIL execute: HTTP {status}, status={result.get('status')}")
         return 1
@@ -70,9 +59,7 @@ def run_smoke(base_url: str, token: str, timeout: int) -> int:
         return 1
     print("PASS authenticated execution")
 
-    status, denied = request_json(
-        f"{base_url}/execute", method="POST", payload=payload, timeout=timeout
-    )
+    status, denied = request_json(f"{base_url}/execute", method="POST", payload=payload, timeout=timeout)
     if status != 401 or denied.get("error") != "unauthorized":
         print(f"FAIL auth boundary: HTTP {status}")
         return 1
@@ -81,12 +68,12 @@ def run_smoke(base_url: str, token: str, timeout: int) -> int:
     return 0
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base-url", default=os.getenv("UAR_SMOKE_BASE_URL", ""))
     parser.add_argument("--token", default=os.getenv("RUNTIME_EXECUTION_TOKEN", ""))
     parser.add_argument("--timeout", type=int, default=int(os.getenv("M29_TIMEOUT_SECONDS", "30")))
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     if not args.base_url.strip() or not args.token.strip():
         print("FAIL configuration: UAR_SMOKE_BASE_URL and RUNTIME_EXECUTION_TOKEN are required")
         return 2
