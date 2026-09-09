@@ -43,6 +43,7 @@ class RevisionService:
                 WorkflowState.REVISION,
                 WorkflowState.SUPERVISING,
                 WorkflowState.WAITING_FINAL_APPROVAL,
+                WorkflowState.WORKER_WAITING_HUMAN,
             }:
                 raise RevisionServiceError(f"cannot request revision from state {state.value}")
 
@@ -62,7 +63,11 @@ class RevisionService:
             revision.validate()
 
             current = self.sessions.get_context(run_id).state
-            if current in {WorkflowState.SUPERVISING, WorkflowState.WAITING_FINAL_APPROVAL}:
+            if current in {
+                WorkflowState.SUPERVISING,
+                WorkflowState.WAITING_FINAL_APPROVAL,
+                WorkflowState.WORKER_WAITING_HUMAN,
+            }:
                 self.sessions.transition(run_id, WorkflowState.REVISION)
                 current = WorkflowState.REVISION
             if current == WorkflowState.REVISION:
