@@ -28,6 +28,7 @@ This file tracks the implementation order as the repository evolves beyond the o
 - M21 — Persistent session storage via SQLite repository
 - M22 — Chainlit authentication hardening
 - M23 — Static Python execution admission policy
+- M24 — Automated CI validation
 
 ## Current integrated path
 
@@ -55,7 +56,7 @@ Cross-cutting controls:
   M17 Concurrent Session Writes
   M18 Bounded Parallel Execution
   M20 HTTP Contract Integration Tests
-  M22 UI Authentication
+  M24 Automated CI Test Suite
 ```
 
 ## Intentionally not complete yet
@@ -69,8 +70,8 @@ Cross-cutting controls:
 
 ## Next engineering priority
 
-1. M24 — Live cloud validation with free-tier-compatible providers.
-2. M25 — Provider-neutral deployment adapter and operational configuration.
-3. M26 — Multi-user durable identity and authorization.
-4. M27 — Stronger OS/container execution isolation where available.
-5. M28 — Schema-versioned persistence migrations and durable backends.
+1. M25 — Provider-neutral deployment adapter and operational configuration.
+2. M26 — Multi-user durable identity and authorization.
+3. M27 — Stronger OS/container execution isolation where available.
+4. M28 — Schema-versioned persistence migrations and durable backends.
+5. M29 — Live cloud validation against the real Google Colab service and configured Gemini provider.
