@@ -1,12 +1,11 @@
 """State-aware revision tracking and recovery coordination."""
 from __future__ import annotations
 
-from threading import RLock
 from copy import deepcopy
+from threading import RLock
 
 from app.core.states import WorkflowState
 from app.session.manager import SessionManager
-from app.session.models import SessionMessage
 
 from .models import RevisionRequest
 
@@ -46,9 +45,7 @@ class RevisionService:
                 WorkflowState.SUPERVISING,
                 WorkflowState.WAITING_FINAL_APPROVAL,
             }:
-                raise RevisionServiceError(
-                    f"cannot request revision from state {state.value}"
-                )
+                raise RevisionServiceError(f"cannot request revision from state {state.value}")
 
             history = self._history.setdefault(run_id, [])
             revision = RevisionRequest(
@@ -62,8 +59,14 @@ class RevisionService:
             history.append(revision)
 
             current = self.sessions.get_context(run_id).state
-            if current != WorkflowState.ARCHITECTING:
+            if current == WorkflowState.SUPERVISING:
                 self.sessions.transition(run_id, WorkflowState.REVISION)
+                current = WorkflowState.REVISION
+            elif current == WorkflowState.WAITING_FINAL_APPROVAL:
+                self.sessions.transition(run_id, WorkflowState.REVISION)
+                current = WorkflowState.REVISION
+
+            if current == WorkflowState.REVISION:
                 self.sessions.transition(run_id, WorkflowState.ARCHITECTING)
 
             self.sessions.add_message(
