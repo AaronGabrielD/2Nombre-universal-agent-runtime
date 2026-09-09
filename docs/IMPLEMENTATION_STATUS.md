@@ -30,12 +30,14 @@ This file tracks the implementation order as the repository evolves beyond the o
 - M23 — Static Python execution admission policy
 - M24 — Automated CI validation
 - M25 — Provider-neutral deployment adapter
+- M26 — Multi-user durable identity and run authorization
 
 ## Current integrated path
 
 ```text
 User / Chainlit
-  -> M22 Authenticated UI
+  -> M22/M26 Authenticated UI + Durable Identity
+  -> M26 Run Ownership Authorization
   -> M02 Intake
   -> M04 Architect
   -> Gate A (M05)
@@ -59,12 +61,18 @@ Cross-cutting controls:
   M20 HTTP Contract Integration Tests
   M24 Automated CI Test Suite
   M25 Provider-Neutral Deployment Boundary
+  M26 Durable Identity + Owner/Administrator Run Access
 ```
+
+## M26 scope
+
+M26 adds a provider-neutral identity layer backed by SQLite without storing plaintext passwords. Users have a stable `user_id`, username, PBKDF2 password record, enabled state, and role (`user` or `admin`). The environment-backed account from M22 remains a bootstrap mechanism: the first successful login persists that identity into the configured SQLite database without overwriting an existing record.
+
+Runtime sessions created through Chainlit receive immutable owner metadata. Normal users may access only their own runs; administrators may access runs across users. Gate actions are checked against the same ownership boundary before any decision is applied.
 
 ## Intentionally not complete yet
 
 - Strong OS/container isolation beyond static admission controls and the Colab VM boundary.
-- Multi-user durable identity management beyond the environment-backed bootstrap account.
 - Provider-neutral durable storage backends beyond SQLite and schema-versioned migrations.
 - Deployment execution against a concrete hosting provider; M25 currently validates and renders deployment plans without performing external provisioning.
 - Full live Colab + Chainlit + Gemini end-to-end validation in a real cloud runtime.
@@ -72,7 +80,6 @@ Cross-cutting controls:
 
 ## Next engineering priority
 
-1. M26 — Multi-user durable identity and authorization.
-2. M27 — Stronger OS/container execution isolation where available.
-3. M28 — Schema-versioned persistence migrations and durable backends.
-4. M29 — Live cloud validation against the real Google Colab service and configured Gemini provider.
+1. M27 — Stronger OS/container execution isolation where available.
+2. M28 — Schema-versioned persistence migrations and durable backends.
+3. M29 — Live cloud validation against the real Google Colab service and configured Gemini provider.
