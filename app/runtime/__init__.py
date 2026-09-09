@@ -1,11 +1,5 @@
-"""Runtime coordination and composition boundaries."""
+"""Runtime coordination layer that connects bounded milestone services."""
 
-from .bootstrap import RuntimeApplication, build_runtime
 from .service import RuntimeCoordinator, RuntimeCoordinatorError
 
-__all__ = [
-    "RuntimeApplication",
-    "RuntimeCoordinator",
-    "RuntimeCoordinatorError",
-    "build_runtime",
-]
+__all__ = ["RuntimeCoordinator", "RuntimeCoordinatorError"]
