@@ -29,6 +29,7 @@ This file tracks the implementation order as the repository evolves beyond the o
 - M22 — Chainlit authentication hardening
 - M23 — Static Python execution admission policy
 - M24 — Automated CI validation
+- M25 — Provider-neutral deployment adapter
 
 ## Current integrated path
 
@@ -57,6 +58,7 @@ Cross-cutting controls:
   M18 Bounded Parallel Execution
   M20 HTTP Contract Integration Tests
   M24 Automated CI Test Suite
+  M25 Provider-Neutral Deployment Boundary
 ```
 
 ## Intentionally not complete yet
@@ -64,14 +66,13 @@ Cross-cutting controls:
 - Strong OS/container isolation beyond static admission controls and the Colab VM boundary.
 - Multi-user durable identity management beyond the environment-backed bootstrap account.
 - Provider-neutral durable storage backends beyond SQLite and schema-versioned migrations.
-- Provider-neutral deployment adapter and public hosting configuration.
+- Deployment execution against a concrete hosting provider; M25 currently validates and renders deployment plans without performing external provisioning.
 - Full live Colab + Chainlit + Gemini end-to-end validation in a real cloud runtime.
 - Direct tool-handler execution from workers; tools remain declarative and execution stays behind M08.
 
 ## Next engineering priority
 
-1. M25 — Provider-neutral deployment adapter and operational configuration.
-2. M26 — Multi-user durable identity and authorization.
-3. M27 — Stronger OS/container execution isolation where available.
-4. M28 — Schema-versioned persistence migrations and durable backends.
-5. M29 — Live cloud validation against the real Google Colab service and configured Gemini provider.
+1. M26 — Multi-user durable identity and authorization.
+2. M27 — Stronger OS/container execution isolation where available.
+3. M28 — Schema-versioned persistence migrations and durable backends.
+4. M29 — Live cloud validation against the real Google Colab service and configured Gemini provider.
