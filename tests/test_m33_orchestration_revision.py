@@ -61,6 +61,20 @@ class ReviseSupervisor:
         )
 
 
+class FailingSupervisor:
+    def evaluate(self, data: SupervisorInput) -> QAResult:
+        return QAResult(
+            run_id=data.run_id,
+            status=QAStatus.FAIL,
+            score=0.0,
+            summary="Supervisor found a blocking failure.",
+            findings=("fatal test invariant",),
+            blocking_issues=("fatal test invariant",),
+            recommended_action="stop",
+            evidence={"source": "test"},
+        )
+
+
 def settings():
     from app.core.config import Settings
 
@@ -142,7 +156,24 @@ class M33OrchestrationRevisionTests(unittest.TestCase):
         revisions = coordinator.list_revisions(run_id)
         self.assertEqual(len(revisions), 1)
         self.assertEqual(revisions[0].source, "supervisor")
-        self.assertIn("Supervisor QA returned revise", revisions[0].reason)
+        self.assertIn("Supervisor requested", revisions[0].reason)
+
+    def test_supervisor_fail_is_terminal_and_not_a_revision(self):
+        coordinator, sessions, run_id, _ = make_ready_run_with_plan()
+        gateway = ExecutionGateway(backends=(RevisionBackend(),), settings=settings())
+        orchestrator = IntegratedOrchestrator(
+            coordinator=coordinator,
+            session_manager=sessions,
+            worker_runtime=WorkerRuntimeAdapter(gateway=gateway, session_manager=sessions),
+            worker_agent=RevisionWorkerAgent(),
+            supervisor=FailingSupervisor(),
+        )
+
+        result = orchestrator.execute_run(run_id)
+
+        self.assertEqual(result.qa_result.status, QAStatus.FAIL)
+        self.assertEqual(sessions.get_context(run_id).state, WorkflowState.FAILED)
+        self.assertEqual(coordinator.list_revisions(run_id), ())
 
     def test_gate_c_rejection_creates_revision_and_never_executes(self):
         coordinator, sessions, run_id, approvals = make_ready_run_with_plan(("dangerous-tool",))
