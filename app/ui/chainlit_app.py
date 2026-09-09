@@ -13,8 +13,9 @@ import chainlit as cl
 from app.core.contracts import HumanDecisionType, to_dict
 from app.core.states import WorkflowState
 from app.intake.models import IntakeFile
-from app.runtime import RuntimeApplication, RuntimeCoordinatorError, build_runtime
 from app.identity import RunAccessDeniedError
+from app.runtime import RuntimeCoordinatorError
+from app.runtime.bootstrap import RuntimeApplication, build_runtime
 
 
 _runtime: RuntimeApplication = build_runtime()
@@ -288,7 +289,7 @@ async def on_runtime_gate_decision(action: cl.Action) -> None:
         if gate.kind == "TOOL_RISK":
             if not worker_id:
                 raise RuntimeCoordinatorError("tool-risk gate is missing worker_id")
-            authorization = await cl.make_async(_orchestrator.resume_after_tool_gate)(
+            result = await cl.make_async(_orchestrator.resume_after_tool_gate)(
                 run_id=run_id,
                 gate_id=gate_id,
                 decision=decision,
@@ -300,14 +301,14 @@ async def on_runtime_gate_decision(action: cl.Action) -> None:
                 content=f"Gate C resuelto como **{decision.value}**. Reanudando `{worker_id}`...",
                 author="Human Approval",
             ).send()
-            if authorization.pending_gate_id:
+            if result.pending_gate_id:
                 await _show_tool_gate(
-                    authorization.pending_gate_id,
+                    result.pending_gate_id,
                     run_id,
-                    authorization.pending_worker_id,
+                    result.pending_worker_id,
                 )
-            elif authorization.final_gate_id:
-                await _show_final_gate(authorization.final_gate_id, run_id)
+            elif result.final_gate_id:
+                await _show_final_gate(result.final_gate_id, run_id)
             return
 
         if gate.kind not in {"ARCHITECTURE", "FINAL"}:
