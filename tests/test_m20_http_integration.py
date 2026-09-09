@@ -1,39 +1,46 @@
-import tempfile
+import os
+import threading
 import unittest
-from pathlib import Path
-from urllib.request import urlopen
+from tempfile import TemporaryDirectory
+from urllib.request import Request, urlopen
 
-from app.core.config import Settings
 from app.core.contracts import ExecutionRequest, ExecutionStatus
-from app.execution import ColabExecutionBackend
-from app.execution.colab import ColabBackendError
-from app.execution.colab_service import ColabRuntimeConfig, RuntimeColabHTTPServer
+from app.execution.colab import ColabBackendError, ColabExecutionBackend
+from app.execution.colab_service import ExecutionServiceConfig, RuntimeColabHTTPServer
 
 
 class M20HttpIntegrationTests(unittest.TestCase):
     def setUp(self):
-        self._temp_dir = tempfile.TemporaryDirectory()
-        self.config = ColabRuntimeConfig(
-            execution_token="integration-token",
-            bind_host="127.0.0.1",
-            port=0,
-            allow_network=False,
-            python_policy="restricted",
-            artifact_root=str(Path(self._temp_dir.name) / "artifacts"),
-        )
-        self.service = RuntimeColabHTTPServer(self.config)
-        self.service.start()
-        host, port = self.service.address
+        self._tmp = TemporaryDirectory()
+        self._old = {
+            key: os.environ.get(key)
+            for key in ("RUNTIME_EXECUTION_TOKEN", "RUNTIME_ARTIFACT_ROOT", "RUNTIME_ALLOW_NETWORK")
+        }
+        os.environ["RUNTIME_EXECUTION_TOKEN"] = "integration-test-token"
+        os.environ["RUNTIME_ARTIFACT_ROOT"] = self._tmp.name
+        os.environ["RUNTIME_ALLOW_NETWORK"] = "false"
+        self.config = ExecutionServiceConfig()
+        self.server = RuntimeColabHTTPServer(("127.0.0.1", 0), self.config)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        host, port = self.server.server_address
         self.base_url = f"http://{host}:{port}"
         self.backend = ColabExecutionBackend(
             base_url=self.base_url,
-            token=self.config.execution_token,
+            token="integration-test-token",
             timeout_seconds=10,
         )
 
     def tearDown(self):
-        self.service.shutdown()
-        self._temp_dir.cleanup()
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=2)
+        self._tmp.cleanup()
+        for key, value in self._old.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
     def request(self, *, code="print('integration-ok')", needs_network=False, execution_id="exec-m20"):
         return ExecutionRequest(
@@ -42,7 +49,7 @@ class M20HttpIntegrationTests(unittest.TestCase):
             worker_id="worker-m20",
             language="python",
             code=code,
-            timeout_seconds=10,
+            timeout_seconds=5,
             needs_network=needs_network,
             environment={},
         )
@@ -76,9 +83,9 @@ class M20HttpIntegrationTests(unittest.TestCase):
         self.assertTrue(artifact.uri.startswith(f"artifact://{execution_id}/"))
 
         url = f"{self.base_url}/artifacts/{execution_id}/{artifact.name}"
-        with urlopen(url, timeout=10) as response:
-            self.assertEqual(response.status, 200)
-            self.assertEqual(response.read().decode("utf-8"), "artifact-ok")
+        request = Request(url, headers={"Authorization": "Bearer integration-test-token"})
+        with urlopen(request, timeout=5) as response:
+            self.assertEqual(response.read(), b"artifact-ok")
 
 
 if __name__ == "__main__":
