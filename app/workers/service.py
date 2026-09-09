@@ -122,6 +122,7 @@ class WorkerDispatcher:
         worker_id: str,
         description: str,
         expected_output: str,
+        required_tools: tuple[str, ...] = (),
         task_id: str | None = None,
     ) -> TaskSpec:
         if not worker_id.strip():
@@ -130,9 +131,14 @@ class WorkerDispatcher:
             raise WorkerDispatchError("description cannot be empty")
         if not expected_output.strip():
             raise WorkerDispatchError("expected_output cannot be empty")
+        if not isinstance(required_tools, tuple) or not all(
+            isinstance(tool, str) and tool.strip() for tool in required_tools
+        ):
+            raise WorkerDispatchError("required_tools must be a tuple of non-empty strings")
         return TaskSpec(
             task_id=task_id or f"task-{uuid4().hex}",
             worker_id=worker_id,
             description=description,
             expected_output=expected_output,
+            required_tools=tuple(tool.strip() for tool in required_tools),
         )
