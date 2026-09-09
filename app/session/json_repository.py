@@ -1,35 +1,19 @@
-"""Provider-neutral durable session repository using one JSON document per run.
-
-This backend is intentionally simple and dependency-free. It is suitable for
-single-process or low-contention deployments and provides a durable alternative
-to SQLite without changing the SessionRepository contract.
-"""
+"""Provider-neutral durable session repository using one JSON document per run."""
 from __future__ import annotations
 
 import json
 import os
-from copy import deepcopy
+from datetime import datetime
 from pathlib import Path
 from threading import RLock
 from typing import Any
 
-from app.core.contracts import (
-    ArchitecturePlan,
-    ArtifactRef,
-    ExecutionResult,
-    ExecutionStatus,
-    FinalResult,
-    HumanDecision,
-    HumanDecisionType,
-    TaskSpec,
-    ToolSpec,
-    WorkerSpec,
-)
+from app.core.contracts import ArchitecturePlan, ArtifactRef, ExecutionResult, ExecutionStatus, FinalResult, HumanDecision, HumanDecisionType, WorkerSpec, to_dict
 from app.core.models import RunContext
 from app.core.states import WorkflowState
 
 from .models import SessionMessage, SessionRecord, WorkerOutput
-from .repository import SessionNotFoundError, SessionRepository, SessionRepositoryError
+from .repository import SessionNotFoundError, SessionRepositoryError
 
 
 class JsonFileSessionRepository:
@@ -92,10 +76,7 @@ class JsonFileSessionRepository:
         return self.root / f"{run_id}.json"
 
     def _write(self, path: Path, record: SessionRecord) -> None:
-        payload = {
-            "schema_version": self.SCHEMA_VERSION,
-            "record": _record_to_dict(record),
-        }
+        payload = {"schema_version": self.SCHEMA_VERSION, "record": _json_safe(to_dict(record))}
         temp = path.with_suffix(path.suffix + ".tmp")
         try:
             temp.write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2), encoding="utf-8")
@@ -116,48 +97,37 @@ class JsonFileSessionRepository:
         context = RunContext(
             run_id=context_raw["run_id"],
             state=WorkflowState(context_raw["state"]),
-            created_at=_parse_dt(context_raw["created_at"]),
-            updated_at=_parse_dt(context_raw["updated_at"]),
+            created_at=datetime.fromisoformat(context_raw["created_at"]),
+            updated_at=datetime.fromisoformat(context_raw["updated_at"]),
             metadata=dict(context_raw.get("metadata", {})),
         )
         return SessionRecord(
             context=context,
             messages=[SessionMessage(**item) for item in raw.get("messages", [])],
             artifacts=[ArtifactRef(**item) for item in raw.get("artifacts", [])],
-            decisions=[
-                HumanDecision(
-                    gate_id=item["gate_id"], run_id=item["run_id"],
-                    decision=HumanDecisionType(item["decision"]), feedback=item["feedback"],
-                    timestamp=item["timestamp"], actor=item.get("actor", "human"),
-                )
-                for item in raw.get("decisions", [])
-            ],
-            execution_results=[
-                ExecutionResult(
-                    execution_id=item["execution_id"], status=ExecutionStatus(item["status"]),
-                    exit_code=item.get("exit_code"), stdout=item["stdout"], stderr=item["stderr"],
-                    duration_ms=item["duration_ms"],
-                    artifacts=tuple(ArtifactRef(**artifact) for artifact in item.get("artifacts", [])),
-                    backend=item.get("backend", "unknown"),
-                )
-                for item in raw.get("execution_results", [])
-            ],
-            worker_outputs={
-                key: WorkerOutput(**value) for key, value in raw.get("worker_outputs", {}).items()
-            },
+            decisions=[HumanDecision(gate_id=item["gate_id"], run_id=item["run_id"], decision=HumanDecisionType(item["decision"]),
+                                     feedback=item["feedback"], timestamp=item["timestamp"], actor=item.get("actor", "human"))
+                       for item in raw.get("decisions", [])],
+            execution_results=[ExecutionResult(execution_id=item["execution_id"], status=ExecutionStatus(item["status"]),
+                                               exit_code=item.get("exit_code"), stdout=item["stdout"], stderr=item["stderr"],
+                                               duration_ms=item["duration_ms"],
+                                               artifacts=tuple(ArtifactRef(**artifact) for artifact in item.get("artifacts", [])),
+                                               backend=item.get("backend", "unknown"))
+                              for item in raw.get("execution_results", [])],
+            worker_outputs={key: WorkerOutput(**value) for key, value in raw.get("worker_outputs", {}).items()},
             architecture_plan=_plan_from_dict(raw["architecture_plan"]) if raw.get("architecture_plan") else None,
             final_result=_final_result_from_dict(raw["final_result"]) if raw.get("final_result") else None,
         )
 
 
-def _parse_dt(value: str):
-    from datetime import datetime
-    return datetime.fromisoformat(value)
-
-
-def _record_to_dict(record: SessionRecord) -> dict[str, Any]:
-    from app.core.contracts import to_dict
-    return to_dict(record)
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_json_safe(item) for item in value]
+    return value
 
 
 def _plan_from_dict(raw: dict[str, Any]) -> ArchitecturePlan:
@@ -166,14 +136,10 @@ def _plan_from_dict(raw: dict[str, Any]) -> ArchitecturePlan:
         assumptions=tuple(raw.get("assumptions", [])), constraints=tuple(raw.get("constraints", [])),
         acceptance_criteria=tuple(raw.get("acceptance_criteria", [])), risks=tuple(raw.get("risks", [])),
         required_capabilities=tuple(raw.get("required_capabilities", [])),
-        workers=tuple(
-            WorkerSpec(
-                worker_id=item["worker_id"], role=item["role"], mission=item["mission"],
-                deliverables=tuple(item.get("deliverables", [])), required_tools=tuple(item.get("required_tools", [])),
-                dependencies=tuple(item.get("dependencies", [])), can_request_human_input=item.get("can_request_human_input", True),
-            )
-            for item in raw.get("workers", [])
-        ),
+        workers=tuple(WorkerSpec(worker_id=item["worker_id"], role=item["role"], mission=item["mission"],
+                                 deliverables=tuple(item.get("deliverables", [])), required_tools=tuple(item.get("required_tools", [])),
+                                 dependencies=tuple(item.get("dependencies", [])), can_request_human_input=item.get("can_request_human_input", True))
+                       for item in raw.get("workers", [])),
     )
 
 
