@@ -1,4 +1,4 @@
-"""Runtime coordination layer that connects milestone services without owning their internals."""
+"""Runtime coordination layer that connects bounded milestone services."""
 
 from .service import RuntimeCoordinator, RuntimeCoordinatorError
 
