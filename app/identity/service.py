@@ -49,7 +49,7 @@ class IdentityService:
         try:
             user = self.repository.get_by_username(normalized)
         except UserNotFoundError:
-            user = self._bootstrap_from_environment(normalized)
+            user = self._bootstrap_from_environment(normalized, password)
             if user is None:
                 return None
 
@@ -67,31 +67,39 @@ class IdentityService:
         return AuthenticatedIdentity(user.user_id, user.username, user.role)
 
     def ensure_bootstrap_user(self) -> AuthenticatedIdentity | None:
+        """Return the configured bootstrap identity only when already persisted."""
         username = os.getenv("UAR_AUTH_USERNAME", "").strip()
-        return self._bootstrap_from_environment(username) if username else None
+        if not username:
+            return None
+        try:
+            user = self.repository.get_by_username(username)
+        except UserNotFoundError:
+            return None
+        if not user.enabled:
+            return None
+        return AuthenticatedIdentity(user.user_id, user.username, user.role)
 
-    def _bootstrap_from_environment(self, username: str) -> UserRecord | None:
+    def _bootstrap_from_environment(self, username: str, password: str) -> UserRecord | None:
         configured_username = os.getenv("UAR_AUTH_USERNAME", "").strip()
         encoded_password = os.getenv("UAR_AUTH_PASSWORD_HASH", "").strip()
         if not configured_username or not encoded_password:
             return None
         if not hmac.compare_digest(username, configured_username):
             return None
+        if not verify_password(password, encoded_password):
+            return None
         try:
             role = UserRole(os.getenv("UAR_AUTH_ROLE", UserRole.USER.value).strip() or UserRole.USER.value)
         except ValueError as exc:
             raise IdentityServiceError("UAR_AUTH_ROLE must be 'user' or 'admin'") from exc
 
-        try:
-            return self.repository.get_by_username(configured_username)
-        except UserNotFoundError:
-            user = UserRecord(
-                username=configured_username,
-                password_hash=encoded_password,
-                role=role,
-            )
-            user.validate()
-            return self.repository.create(user)
+        user = UserRecord(
+            username=configured_username,
+            password_hash=encoded_password,
+            role=role,
+        )
+        user.validate()
+        return self.repository.create(user)
 
     @staticmethod
     def provision_user(
