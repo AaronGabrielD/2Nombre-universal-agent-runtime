@@ -24,6 +24,7 @@ This file tracks the implementation order as the repository evolves beyond the o
 - M17 — Session Concurrency Hardening
 - M18 — Controlled Parallel Worker Execution
 - M19 — Tool Registry orchestration + Gate C pause/resume
+- M20 — HTTP integration test coverage (M08 ↔ M12)
 
 ## Current integrated path
 
@@ -38,7 +39,7 @@ User / Chainlit
   -> M14 CrewAI Worker Adapter
   -> M13 Worker Runtime Adapter
   -> M08 Execution Gateway
-  -> Colab Execution Service
+  -> M12 Colab Execution Service
   -> M01 Session evidence
   -> M09 Supervisor / QA
   -> Gate D (M05/M10)
@@ -47,11 +48,12 @@ User / Chainlit
 Cross-cutting controls:
   M17 Concurrent Session Writes
   M18 Bounded Parallel Execution
+  M20 HTTP Contract Integration Tests
 ```
 
 ## Intentionally not complete yet
 
-- Direct tool-handler invocation from workers; M07/M16 currently authorize declarations and preserve M08 as the execution boundary.
+- Direct tool-handler invocation from workers; M07/M16 authorize declarations and preserve M08 as the execution boundary.
 - Persistent production data layer.
 - Production authentication/authorization configuration for Chainlit.
 - Deployment adapter and public hosting configuration.
@@ -60,8 +62,7 @@ Cross-cutting controls:
 
 ## Next engineering priority
 
-1. M20 — End-to-end HTTP integration tests for M08 ↔ M12.
-2. Design provider-agnostic persistent run storage.
-3. Harden production authentication and deployment.
-4. Strengthen execution isolation/sandbox policy.
-5. Perform live cloud validation with free-tier-compatible providers.
+1. M21 — Provider-agnostic persistent run storage.
+2. M22 — Production authentication and deployment hardening.
+3. M23 — Stronger execution isolation/sandbox policy.
+4. M24 — Live cloud validation with free-tier-compatible providers.
