@@ -1,8 +1,33 @@
-# Implementation Status
+# Implementation status
 
-This file tracks the implementation order as the repository evolves beyond the original Blueprint v1.0 numbering.
+M00–M32 are implemented in `main` with automated CI coverage. Environment-specific live validation that requires external endpoints or credentials remains intentionally deferred.
 
-## Completed
+Current integrated path:
+
+```text
+User / Chainlit
+  -> Auth + Run Authorization
+  -> Intake
+  -> Architect
+  -> Gate A (Human)
+  -> Worker Factory / Dispatcher
+  -> CrewAI Worker Adapter
+  -> Tool Authorization
+      -> Gate C (Human) when required
+  -> Execution Gateway
+      -> Docker backend (local hardened option)
+      -> Colab HTTP backend (remote option)
+  -> Supervisor / QA
+  -> Gate D (Human)
+  -> Completed | Revision | Rejected
+
+Revision path:
+  -> RevisionService (reason/source/feedback/attempt)
+  -> ARCHITECTING
+  -> new architecture approval cycle
+```
+
+## Milestones
 
 - M00 — Foundation & Contracts
 - M01 — Session Manager
@@ -38,34 +63,9 @@ This file tracks the implementation order as the repository evolves beyond the o
 - M31 — Hardened provider-neutral core contracts
 - M32 — Revision tracking + recovery loop
 
-## Current integrated path
-
-```text
-User / Chainlit
-  -> Auth + Run Authorization
-  -> Intake
-  -> Architect
-  -> Gate A (Human)
-  -> Worker Factory / Dispatcher
-  -> CrewAI Worker Adapter
-  -> Tool Authorization
-      -> Gate C (Human) when required
-  -> Execution Gateway
-      -> Docker backend (local hardened option)
-      -> Colab HTTP backend (remote option)
-  -> Supervisor / QA
-  -> Gate D (Human)
-  -> Completed | Revision | Rejected
-
-Revision path:
-  -> RevisionService (reason/source/feedback/attempt)
-  -> ARCHITECTING
-  -> new architecture approval cycle
-```
-
 ## Revision and recovery hardening
 
-M32 adds an explicit revision record and recovery service. Human architecture or final-result modification requests are now recorded with an immutable revision ID, source, feedback and attempt number before returning the run to `ARCHITECTING`. This keeps the recovery loop observable without moving planning or execution logic into the state tracker.
+M32 adds an explicit revision record and recovery service. Human architecture or final-result modification requests are recorded with an immutable revision ID, source, feedback and attempt number before returning the run to `ARCHITECTING`. Revision history is reconstructed from persisted session messages so a new service instance can recover it without in-memory state.
 
 ## Security and deployment boundaries
 
@@ -77,6 +77,6 @@ M32 adds an explicit revision record and recovery service. Human architecture or
 
 ## Repository readiness
 
-M00–M32 are implemented with automated CI coverage. Remaining work is post-blueprint hardening and productization: richer worker/tool/QA protocols, complete UI/API surfaces, observability, stronger policy enforcement, durable distributed coordination, and broader integration testing.
+M00–M32 are implemented with automated CI coverage. Remaining work is post-blueprint hardening and productization: orchestration-wide revision integration, revision limits, richer worker/tool/QA protocols, complete UI/API surfaces, observability, stronger policy enforcement, durable distributed coordination, and broader integration testing.
 
 Environment-specific live validation remains intentionally deferred until a reachable runtime endpoint and required credentials are available.
