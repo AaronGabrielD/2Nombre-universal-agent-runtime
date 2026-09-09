@@ -70,6 +70,17 @@ class JsonFileSessionRepository:
     def contains(self, run_id: str) -> bool:
         return self._path(run_id).is_file()
 
+    def list(self) -> tuple[SessionRecord, ...]:
+        with self._lock:
+            records = []
+            for path in sorted(self.root.glob("*.json")):
+                try:
+                    payload = json.loads(path.read_text(encoding="utf-8"))
+                    records.append(self._from_dict(payload))
+                except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError, SessionRepositoryError) as exc:
+                    raise SessionRepositoryError(f"stored session {path.stem} is corrupt") from exc
+            return tuple(records)
+
     def _path(self, run_id: str) -> Path:
         if not isinstance(run_id, str) or not run_id.strip() or any(ch in run_id for ch in "\\/\x00\r\n"):
             raise ValueError("run_id must be a non-empty safe identifier")
