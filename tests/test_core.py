@@ -103,3 +103,11 @@ class ContractTests(unittest.TestCase):
         payload = to_dict(request)
         self.assertEqual(payload["execution_id"], "e1")
         json.dumps(payload)
+
+    def test_execution_status_values_are_stable(self):
+        self.assertEqual(ExecutionStatus.SUCCESS.value, "success")
+        self.assertEqual(ExecutionStatus.TIMEOUT.value, "timeout")
+
+
+if __name__ == "__main__":
+    unittest.main()
