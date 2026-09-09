@@ -34,6 +34,7 @@ This file tracks the implementation order as the repository evolves beyond the o
 - M27 — Stronger Docker execution isolation backend
 - M28 — Schema-versioned persistence migrations + JSON durable session backend
 - M29 — Live cloud smoke-validation harness
+- M30 — Integrated runtime composition + Chainlit orchestration
 
 ## Current integrated path
 
@@ -59,6 +60,10 @@ User / Chainlit
   -> Completed | Revision | Rejected
 ```
 
+## M30 integration hardening
+
+M30 adds a composition root so presentation/API layers can consume one coherently wired runtime instead of constructing milestone services independently. Chainlit Gate A now enters the integrated orchestrator, and Gate C decisions can resume the affected worker. Independent workers in the same dependency batch are allowed to finish when another worker is paused for human authorization.
+
 ## Security and deployment boundaries
 
 - M27 provides container-level defense in depth when Docker is available; it is not a high-assurance VM boundary.
@@ -68,6 +73,8 @@ User / Chainlit
 - M25 remains provider-neutral deployment rendering; it does not provision third-party infrastructure automatically.
 - Direct tool handlers remain declarative and execution stays behind M08.
 
-## Final repository readiness
+## Repository readiness
 
-The original Blueprint requirements and all deferred engineering milestones represented by M26–M29 now have code, tests, and documentation. The remaining operational action is environment-specific: deploy the runtime/Colab service and run `python scripts/m29_cloud_smoke.py` against the real endpoint when credentials and a reachable URL are available.
+M00–M30 are implemented with automated CI coverage. Remaining work is post-blueprint hardening and productization: deeper contract/state auditing, revision/recovery loops, richer worker/tool/QA protocols, complete UI/API surfaces, observability, stronger security policy enforcement, and broader failure/integration testing.
+
+Environment-specific live validation remains intentionally deferred until a reachable runtime endpoint and required credentials are available.
