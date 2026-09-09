@@ -25,6 +25,7 @@ This file tracks the implementation order as the repository evolves beyond the o
 - M18 — Controlled Parallel Worker Execution
 - M19 — Tool Registry orchestration + Gate C pause/resume
 - M20 — HTTP integration test coverage (M08 ↔ M12)
+- M21 — Persistent session storage via SQLite repository
 
 ## Current integrated path
 
@@ -41,6 +42,7 @@ User / Chainlit
   -> M08 Execution Gateway
   -> M12 Colab Execution Service
   -> M01 Session evidence
+  -> M21 Persistent Session Repository (optional)
   -> M09 Supervisor / QA
   -> Gate D (M05/M10)
   -> Completed | Revision | Rejected
@@ -54,15 +56,16 @@ Cross-cutting controls:
 ## Intentionally not complete yet
 
 - Direct tool-handler invocation from workers; M07/M16 authorize declarations and preserve M08 as the execution boundary.
-- Persistent production data layer.
+- Provider-neutral durable storage backends beyond SQLite.
 - Production authentication/authorization configuration for Chainlit.
 - Deployment adapter and public hosting configuration.
 - Stronger execution sandbox than the Colab VM boundary.
 - Full live Colab + Chainlit + Gemini end-to-end validation in a real cloud runtime.
+- Schema-versioned durable storage migration strategy.
 
 ## Next engineering priority
 
-1. M21 — Provider-agnostic persistent run storage.
-2. M22 — Production authentication and deployment hardening.
-3. M23 — Stronger execution isolation/sandbox policy.
-4. M24 — Live cloud validation with free-tier-compatible providers.
+1. M22 — Production authentication and deployment hardening.
+2. M23 — Stronger execution isolation/sandbox policy.
+3. M24 — Live cloud validation with free-tier-compatible providers.
+4. M25 — Additional durable backends and schema-versioned migrations.
