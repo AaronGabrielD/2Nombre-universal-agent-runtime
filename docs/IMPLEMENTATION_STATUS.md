@@ -1,6 +1,6 @@
 # Implementation status
 
-M00–M33 are implemented in `main` with automated CI coverage. Environment-specific live validation that requires external endpoints or credentials remains intentionally deferred.
+M00–M34 are implemented in `main` with automated CI coverage. Environment-specific live validation that requires external endpoints or credentials remains intentionally deferred.
 
 Current integrated path:
 
@@ -25,6 +25,12 @@ Revision path:
   -> RevisionService (reason/source/feedback/attempt/limit)
   -> ARCHITECTING
   -> new architecture approval cycle
+
+Restart recovery path:
+  -> persisted SessionRepository
+  -> SessionManager.list_recoverable_sessions()
+  -> inspect state/evidence
+  -> explicit coordinator resume (future milestone)
 ```
 
 ## Milestones
@@ -64,10 +70,11 @@ Revision path:
 - M32 — Revision tracking + recovery loop
 - M33 — Orchestration-wide revision integration
 - M34 — Revision limits and recovery-loop hardening
+- M35 — Durable session discovery for restart recovery
 
 ## Revision and recovery hardening
 
-M32 adds explicit revision records and durable history. M33 routes recoverable Supervisor QA revisions and Gate C denials through `RuntimeCoordinator` and `RevisionService`, returning the run to `ARCHITECTING` instead of mutating `REVISION` directly. M34 adds a per-service configurable revision ceiling (default 3) and rejects additional revision requests before mutating workflow state, including when the service is recreated from persisted session history.
+M32 adds explicit revision records and durable history. M33 routes recoverable Supervisor QA revisions and Gate C denials through `RuntimeCoordinator` and `RevisionService`, returning the run to `ARCHITECTING` instead of mutating `REVISION` directly. M34 adds a per-service configurable revision ceiling (default 3) and rejects additional revision requests before mutating workflow state. M35 adds repository-wide session enumeration and `SessionManager.list_recoverable_sessions()` so a new process can discover non-terminal runs from SQLite, JSON, or in-memory storage without automatically executing anything.
 
 ## Security and deployment boundaries
 
@@ -79,6 +86,6 @@ M32 adds explicit revision records and durable history. M33 routes recoverable S
 
 ## Repository readiness
 
-M00–M34 are implemented with automated CI coverage. Remaining work is post-blueprint hardening and productization: richer worker/tool/QA protocols, complete UI/API surfaces, observability, stronger policy enforcement, durable distributed coordination, crash/restart recovery, and broader integration testing.
+M00–M34 are implemented with automated CI coverage; M35 is pending its PR CI validation. Remaining work is post-blueprint hardening and productization: explicit coordinator resume after restart, richer worker/tool/QA protocols, complete UI/API surfaces, observability, stronger policy enforcement, durable distributed coordination, and broader integration testing.
 
 Environment-specific live validation remains intentionally deferred until a reachable runtime endpoint and required credentials are available.
