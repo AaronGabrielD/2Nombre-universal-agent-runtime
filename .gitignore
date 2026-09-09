@@ -19,3 +19,8 @@ logs/
 *.log
 .tmp/
 workspace/
+
+# Durable local identity/session databases
+*.db
+*.sqlite
+*.sqlite3

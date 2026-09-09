@@ -69,7 +69,7 @@ class M20HttpIntegrationTests(unittest.TestCase):
 
     def test_network_policy_is_enforced_by_remote_service(self):
         result = self.backend.execute(self.request(needs_network=True, execution_id="exec-network"))
-        self.assertEqual(result.status, ExecutionStatus.ERROR)
+        self.assertEqual(result.status, ExecutionStatus.DENIED)
         self.assertIn("network execution is disabled", result.stderr)
 
     def test_artifact_is_returned_and_retrievable(self):

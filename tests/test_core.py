@@ -25,6 +25,11 @@ class StateMachineTests(unittest.TestCase):
         run.transition_to(WorkflowState.WAITING_ARCHITECT_APPROVAL)
         self.assertEqual(run.state, WorkflowState.WAITING_ARCHITECT_APPROVAL)
 
+    def test_rejected_tool_gate_can_enter_revision(self):
+        run = RunContext(state=WorkflowState.WORKER_WAITING_HUMAN)
+        run.transition_to(WorkflowState.REVISION)
+        self.assertEqual(run.state, WorkflowState.REVISION)
+
     def test_illegal_transition_is_rejected(self):
         run = RunContext()
         with self.assertRaises(IllegalStateTransition):

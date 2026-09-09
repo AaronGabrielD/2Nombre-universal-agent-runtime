@@ -39,10 +39,10 @@ class SessionConcurrencyTests(unittest.TestCase):
     def test_snapshot_isolated_during_concurrent_worker_updates(self):
         sessions = SessionManager()
         context = sessions.create_session()
-        barrier = threading.Barrier(4)
+        start_writers = threading.Event()
 
         def writer(index: int) -> None:
-            barrier.wait()
+            start_writers.wait()
             from app.session.models import WorkerOutput
             sessions.set_worker_output(
                 context.run_id,
@@ -53,6 +53,7 @@ class SessionConcurrencyTests(unittest.TestCase):
         for thread in threads:
             thread.start()
         snapshot_before = sessions.snapshot(context.run_id)
+        start_writers.set()
         for thread in threads:
             thread.join()
 

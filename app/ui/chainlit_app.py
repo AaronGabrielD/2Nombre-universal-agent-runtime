@@ -15,34 +15,63 @@ from app.architect.service import UniversalArchitect
 from app.core.contracts import HumanDecisionType, to_dict
 from app.core.config import get_settings
 from app.core.states import WorkflowState
+from app.identity import IdentityService, RunAccessDeniedError, RunAuthorizationService, SQLiteUserRepository
 from app.intake.models import IntakeFile
 from app.llm.gemini import GeminiAdapter
 from app.runtime.service import RuntimeCoordinator, RuntimeCoordinatorError
-from app.ui.auth import authenticate_from_environment
 
 
 settings = get_settings()
 _coordinator = RuntimeCoordinator(
     architect=UniversalArchitect(GeminiAdapter(settings), settings=settings),
 )
+_identity_service = IdentityService(
+    SQLiteUserRepository(os.getenv("UAR_IDENTITY_DB_PATH", "runtime_users.db"))
+)
+_run_authorization = RunAuthorizationService()
 
 
 @cl.password_auth_callback
 def password_auth_callback(username: str, password: str):
-    """Authenticate the configured UI account using a PBKDF2 password record."""
-    identity = authenticate_from_environment(username, password)
+    """Authenticate against durable SQLite identity storage."""
+    identity = _identity_service.authenticate(username, password)
     if identity is None:
         return None
     return cl.User(
-        identifier=identity["identifier"],
-        metadata=identity["metadata"],
+        identifier=identity.username,
+        metadata={**identity.metadata(), "user_id": identity.user_id},
     )
 
 
-def _actor() -> str:
+def _identity():
     user = cl.user_session.get("user")
-    identifier = getattr(user, "identifier", None)
-    return str(identifier or "human")
+    metadata = getattr(user, "metadata", {}) or {}
+    user_id = str(metadata.get("user_id") or "").strip()
+    role = str(metadata.get("role") or "user").strip()
+    identifier = str(getattr(user, "identifier", "") or "").strip()
+    if not user_id or not identifier:
+        raise RuntimeCoordinatorError("authenticated identity is missing required metadata")
+    try:
+        identity = _identity_service.get_identity(user_id)
+    except ValueError as exc:
+        raise RuntimeCoordinatorError(str(exc)) from exc
+    if identity.username != identifier or identity.role.value != role:
+        raise RuntimeCoordinatorError("authenticated identity metadata mismatch")
+    return identity
+
+
+def _actor() -> str:
+    return _identity().username
+
+
+def _require_run_access(run_id: str):
+    identity = _identity()
+    context = _coordinator.sessions.get_context(run_id)
+    try:
+        _run_authorization.require_access(identity, context)
+    except RunAccessDeniedError as exc:
+        raise RuntimeCoordinatorError(str(exc)) from exc
+    return context
 
 
 def _actions(gate_id: str, run_id: str, decisions: tuple[HumanDecisionType, ...]):
@@ -65,10 +94,12 @@ def _actions(gate_id: str, run_id: str, decisions: tuple[HumanDecisionType, ...]
 @cl.on_chat_start
 async def on_chat_start() -> None:
     cl.user_session.set("run_id", None)
+    identity = _identity()
     await cl.Message(
         content=(
-            "Universal Agent Runtime listo. Describe el objetivo del trabajo. "
-            "Los cambios de arquitectura y la finalización siempre pasan por aprobación humana."
+            f"Universal Agent Runtime listo para `{identity.username}` ({identity.role.value}). "
+            "Describe el objetivo del trabajo. Los cambios de arquitectura y la finalización "
+            "siempre pasan por aprobación humana."
         ),
         author="Runtime",
     ).send()
@@ -76,6 +107,12 @@ async def on_chat_start() -> None:
 
 @cl.on_message
 async def on_message(message: cl.Message) -> None:
+    try:
+        identity = _identity()
+    except RuntimeCoordinatorError as exc:
+        await cl.Message(content=f"Autenticación no disponible: `{exc}`", author="Runtime").send()
+        return
+
     run_id = cl.user_session.get("run_id")
 
     if not run_id:
@@ -106,6 +143,7 @@ async def on_message(message: cl.Message) -> None:
             result = _coordinator.start_run(
                 message.content,
                 files=tuple(files),
+                metadata=_run_authorization.owner_metadata(identity),
                 inline_text_by_name=inline_text_by_name,
             )
             cl.user_session.set("run_id", result.run_id)
@@ -147,7 +185,13 @@ async def on_message(message: cl.Message) -> None:
         ).send()
         return
 
-    state = _coordinator.sessions.get_context(run_id).state
+    try:
+        state = _require_run_access(run_id).state
+    except (RuntimeCoordinatorError, ValueError) as exc:
+        await cl.Message(content=f"Acceso al run rechazado: `{exc}`", author="Runtime").send()
+        cl.user_session.set("run_id", None)
+        return
+
     await cl.Message(
         content=(
             f"El run activo es `{run_id}` y está en `{state.value}`. "
@@ -169,6 +213,7 @@ async def on_runtime_gate_decision(action: cl.Action) -> None:
         return
 
     try:
+        _require_run_access(run_id)
         decision = HumanDecisionType(decision_value)
         gate = _coordinator.approvals.get_gate(gate_id)
         if gate.run_id != run_id:
@@ -198,7 +243,7 @@ async def on_runtime_gate_decision(action: cl.Action) -> None:
             state = _coordinator.apply_final_decision(recorded)
         else:
             raise RuntimeCoordinatorError(f"unsupported gate kind: {gate.kind}")
-    except (ValueError, RuntimeCoordinatorError) as exc:
+    except (ValueError, RuntimeCoordinatorError, RunAccessDeniedError) as exc:
         await cl.Message(content=f"Decisión rechazada: `{exc}`", author="Runtime").send()
         return
 

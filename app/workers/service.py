@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from app.core.config import Settings, get_settings
 from app.core.contracts import ArchitecturePlan, TaskSpec, WorkerSpec
+from app.core.exceptions import ContractValidationError
 
 from .models import DispatchBatch, WorkerInstance
 
@@ -26,7 +27,10 @@ class WorkerFactory:
     ) -> tuple[WorkerInstance, ...]:
         if not run_id.strip():
             raise WorkerDispatchError("run_id cannot be empty")
-        plan.validate(max_workers=self._settings.max_workers)
+        try:
+            plan.validate(max_workers=self._settings.max_workers)
+        except ContractValidationError as exc:
+            raise WorkerDispatchError(str(exc)) from exc
         workers = tuple(WorkerInstance.from_spec(run_id=run_id, spec=spec) for spec in plan.workers)
         if len(workers) > self._settings.max_workers:
             raise WorkerDispatchError("worker count exceeds configured maximum")
@@ -99,23 +103,17 @@ class WorkerDispatcher:
                     sequence=sequence,
                 )
             )
-            dispatched.update(current_ids)
             sequence += 1
-
-            newly_ready: list[str] = []
-            for completed_id in current_ids:
-                for dependent_id in dependents[completed_id]:
-                    indegree[dependent_id] -= 1
-                    if indegree[dependent_id] == 0:
-                        newly_ready.append(dependent_id)
-            for worker_id in sorted(newly_ready):
-                ready.append(worker_id)
+            for worker_id in current_ids:
+                dispatched.add(worker_id)
+                for dependent in dependents[worker_id]:
+                    indegree[dependent] -= 1
+                    if indegree[dependent] == 0:
+                        ready.append(dependent)
 
         if len(dispatched) != len(workers_by_id):
-            unresolved = sorted(set(workers_by_id) - dispatched)
-            raise WorkerDispatchError(
-                f"worker dependency graph contains a cycle or unresolved dependency: {unresolved}"
-            )
+            raise WorkerDispatchError("worker dependency graph contains a cycle")
+
         return tuple(batches)
 
     @staticmethod
@@ -127,13 +125,20 @@ class WorkerDispatcher:
         required_tools: tuple[str, ...] = (),
         task_id: str | None = None,
     ) -> TaskSpec:
-        """Create a validated task contract without executing it."""
-        task = TaskSpec(
+        if not worker_id.strip():
+            raise WorkerDispatchError("worker_id cannot be empty")
+        if not description.strip():
+            raise WorkerDispatchError("description cannot be empty")
+        if not expected_output.strip():
+            raise WorkerDispatchError("expected_output cannot be empty")
+        if not isinstance(required_tools, tuple) or not all(
+            isinstance(tool, str) and tool.strip() for tool in required_tools
+        ):
+            raise WorkerDispatchError("required_tools must be a tuple of non-empty strings")
+        return TaskSpec(
             task_id=task_id or f"task-{uuid4().hex}",
             worker_id=worker_id,
             description=description,
             expected_output=expected_output,
-            required_tools=required_tools,
+            required_tools=tuple(tool.strip() for tool in required_tools),
         )
-        task.validate()
-        return task

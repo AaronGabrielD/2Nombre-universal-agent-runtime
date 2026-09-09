@@ -15,6 +15,7 @@ from app.core.contracts import ExecutionRequest, ExecutionResult, TaskSpec
 from app.execution.models import ExecutionAuthorization
 from app.execution.service import ExecutionGateway
 from app.session.manager import SessionManager
+from app.session.repository import SessionNotFoundError
 
 from .models import DispatchBatch
 
@@ -121,8 +122,6 @@ class WorkerRuntimeAdapter:
                 )
                 for item in validated_tasks
             )
-            # Calling result() in submission order gives deterministic API
-            # ordering while the backend calls themselves overlap.
             return tuple(future.result() for future in futures)
 
     def _validate_batch(
@@ -133,6 +132,10 @@ class WorkerRuntimeAdapter:
     ) -> None:
         if not batch.run_id.strip():
             raise WorkerRuntimeError("batch.run_id cannot be empty")
+        try:
+            self.sessions.get_context(batch.run_id)
+        except SessionNotFoundError as exc:
+            raise WorkerRuntimeError(f"unknown run_id: {batch.run_id}") from exc
         if any(worker.run_id != batch.run_id for worker in batch.workers):
             raise WorkerRuntimeError("all batch workers must belong to batch.run_id")
 

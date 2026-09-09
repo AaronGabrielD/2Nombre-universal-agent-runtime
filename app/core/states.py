@@ -48,6 +48,7 @@ _ALLOWED: dict[WorkflowState, set[WorkflowState]] = {
     },
     WorkflowState.WORKER_WAITING_HUMAN: {
         WorkflowState.EXECUTING,
+        WorkflowState.REVISION,
         WorkflowState.FAILED,
     },
     WorkflowState.SUPERVISING: {
