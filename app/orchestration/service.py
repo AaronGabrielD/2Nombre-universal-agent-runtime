@@ -41,6 +41,15 @@ class OrchestrationResult:
     pending_worker_id: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class _PendingToolGate:
+    """Internal description of one worker blocked behind Gate C."""
+
+    worker: WorkerInstance
+    gate_id: str
+    resolved_tool_ids: tuple[str, ...]
+
+
 class IntegratedOrchestrator:
     """Execute the post-Gate-A lifecycle without bypassing runtime boundaries."""
 
@@ -66,7 +75,7 @@ class IntegratedOrchestrator:
         self.tool_authorization = tool_authorization
 
     def execute_run(self, run_id: str) -> OrchestrationResult:
-        """Execute dependency-safe batches, pausing for unresolved Gate C."""
+        """Execute dependency-safe batches, pausing only affected workers at Gate C."""
         context = self.sessions.get_context(run_id)
         if context.state != WorkflowState.EXECUTING:
             raise IntegratedOrchestrationError(
@@ -100,6 +109,7 @@ class IntegratedOrchestrator:
         for batch in batches:
             task_by_worker = {task.worker_id: task for task in batch.tasks}
             executable: list[tuple[WorkerInstance, Any, ExecutionAuthorization]] = []
+            pending_gates: list[_PendingToolGate] = []
 
             for worker in batch.workers:
                 existing = self.sessions.snapshot(run_id).worker_outputs.get(worker.worker_id)
@@ -131,28 +141,14 @@ class IntegratedOrchestrator:
                             },
                         ),
                     )
-                    self.sessions.add_message(
-                        run_id,
-                        role="system",
-                        content=(
-                            f"Worker {worker.worker_id} is paused pending human Gate C approval "
-                            "for risky tool access."
-                        ),
-                        metadata={
-                            "phase": "tool_authorization",
-                            "gate_id": tool_decision.gate_id,
-                            "worker_id": worker.worker_id,
-                        },
+                    pending_gates.append(
+                        _PendingToolGate(
+                            worker=worker,
+                            gate_id=tool_decision.gate_id,
+                            resolved_tool_ids=tuple(tool.tool_id for tool in tool_decision.resolved_tools),
+                        )
                     )
-                    self.sessions.transition(run_id, WorkflowState.WORKER_WAITING_HUMAN)
-                    return OrchestrationResult(
-                        run_id=run_id,
-                        batches=batches,
-                        execution_results=tuple(all_execution_results),
-                        qa_result=None,
-                        pending_gate_id=tool_decision.gate_id,
-                        pending_worker_id=worker.worker_id,
-                    )
+                    continue
 
                 authorization = tool_decision.authorization or gate_a
                 try:
@@ -170,61 +166,84 @@ class IntegratedOrchestrator:
                 except (RuntimeError, ValueError) as exc:
                     self._set_worker_error(run_id, worker, f"{type(exc).__name__}: {exc}")
 
-            if not executable:
-                continue
-
-            runtime_tasks = tuple(item[1].execution_task for item in executable)
-            authorizations = {item[0].worker_id: item[2] for item in executable}
-            shared_gate_ids = {authorization.gate_id for authorization in authorizations.values()}
-            try:
-                if len(shared_gate_ids) == 1:
-                    results = self.worker_runtime.execute_batch(
-                        batch=DispatchBatch(
-                            run_id=batch.run_id,
-                            workers=tuple(item[0] for item in executable),
-                            tasks=tuple(item[1].execution_task.task for item in executable),
-                            sequence=batch.sequence,
-                        ),
-                        tasks=runtime_tasks,
-                        authorization=next(iter(authorizations.values())),
-                        parallel=len(runtime_tasks) > 1,
-                    )
-                else:
-                    collected: list[ExecutionResult] = []
-                    for worker, execution_plan, authorization in executable:
-                        collected.extend(
-                            self.worker_runtime.execute_batch(
-                                batch=DispatchBatch(
-                                    run_id=batch.run_id,
-                                    workers=(worker,),
-                                    tasks=(execution_plan.execution_task.task,),
-                                    sequence=batch.sequence,
-                                ),
-                                tasks=(execution_plan.execution_task,),
-                                authorization=authorization,
-                            )
+            if executable:
+                runtime_tasks = tuple(item[1].execution_task for item in executable)
+                authorizations = {item[0].worker_id: item[2] for item in executable}
+                shared_gate_ids = {authorization.gate_id for authorization in authorizations.values()}
+                try:
+                    if len(shared_gate_ids) == 1:
+                        results = self.worker_runtime.execute_batch(
+                            batch=DispatchBatch(
+                                run_id=batch.run_id,
+                                workers=tuple(item[0] for item in executable),
+                                tasks=tuple(item[1].execution_task.task for item in executable),
+                                sequence=batch.sequence,
+                            ),
+                            tasks=runtime_tasks,
+                            authorization=next(iter(authorizations.values())),
+                            parallel=len(runtime_tasks) > 1,
                         )
-                    results = tuple(collected)
-            except (WorkerRuntimeError, RuntimeError, ValueError) as exc:
-                error = f"{type(exc).__name__}: {exc}"
-                for worker, _execution_plan, _authorization in executable:
-                    self._set_worker_error(run_id, worker, error)
-                continue
+                    else:
+                        collected: list[ExecutionResult] = []
+                        for worker, execution_plan, authorization in executable:
+                            collected.extend(
+                                self.worker_runtime.execute_batch(
+                                    batch=DispatchBatch(
+                                        run_id=batch.run_id,
+                                        workers=(worker,),
+                                        tasks=(execution_plan.execution_task.task,),
+                                        sequence=batch.sequence,
+                                    ),
+                                    tasks=(execution_plan.execution_task,),
+                                    authorization=authorization,
+                                )
+                            )
+                        results = tuple(collected)
+                except (WorkerRuntimeError, RuntimeError, ValueError) as exc:
+                    error = f"{type(exc).__name__}: {exc}"
+                    for worker, _execution_plan, _authorization in executable:
+                        self._set_worker_error(run_id, worker, error)
+                    results = ()
 
-            all_execution_results.extend(results)
-            for (worker, execution_plan, _authorization), result in zip(executable, results):
-                self.sessions.set_worker_output(
+                all_execution_results.extend(results)
+                for (worker, execution_plan, _authorization), result in zip(executable, results):
+                    self.sessions.set_worker_output(
+                        run_id,
+                        WorkerOutput(
+                            worker_id=worker.worker_id,
+                            run_id=run_id,
+                            status="success" if result.status.value == "success" else result.status.value,
+                            output={
+                                "summary": execution_plan.summary,
+                                "authorized_tools": list(worker.required_tools),
+                                "execution": to_dict(result),
+                            },
+                        ),
+                    )
+
+            if pending_gates:
+                pending = pending_gates[0]
+                self.sessions.add_message(
                     run_id,
-                    WorkerOutput(
-                        worker_id=worker.worker_id,
-                        run_id=run_id,
-                        status="success" if result.status.value == "success" else result.status.value,
-                        output={
-                            "summary": execution_plan.summary,
-                            "authorized_tools": list(worker.required_tools),
-                            "execution": to_dict(result),
-                        },
+                    role="system",
+                    content=(
+                        f"Worker {pending.worker.worker_id} is paused pending human Gate C approval "
+                        "for risky tool access. Independent executable workers were allowed to proceed."
                     ),
+                    metadata={
+                        "phase": "tool_authorization",
+                        "gate_id": pending.gate_id,
+                        "worker_id": pending.worker.worker_id,
+                    },
+                )
+                self.sessions.transition(run_id, WorkflowState.WORKER_WAITING_HUMAN)
+                return OrchestrationResult(
+                    run_id=run_id,
+                    batches=batches,
+                    execution_results=tuple(all_execution_results),
+                    qa_result=None,
+                    pending_gate_id=pending.gate_id,
+                    pending_worker_id=pending.worker.worker_id,
                 )
 
         self.sessions.transition(run_id, WorkflowState.SUPERVISING)
