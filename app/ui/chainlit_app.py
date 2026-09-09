@@ -21,7 +21,7 @@ _runtime: RuntimeApplication = build_runtime()
 _coordinator = _runtime.coordinator
 _orchestrator = _runtime.orchestrator
 _identity_service = _runtime.identity
-_run_authorization = _runtime.identity_service if hasattr(_runtime, "identity_service") else None
+_run_authorization = _runtime.run_authorization
 
 
 @cl.password_auth_callback
@@ -61,7 +61,7 @@ def _require_run_access(run_id: str):
     identity = _identity()
     context = _coordinator.sessions.get_context(run_id)
     try:
-        _run_authorization.require_access(identity, context)  # type: ignore[union-attr]
+        _run_authorization.require_access(identity, context)
     except RunAccessDeniedError as exc:
         raise RuntimeCoordinatorError(str(exc)) from exc
     return context
@@ -116,6 +116,36 @@ async def _show_architecture_gate(checkpoint) -> None:
     ).send()
 
 
+async def _show_final_gate(gate_id: str, run_id: str) -> None:
+    gate = _runtime.approvals.get_gate(gate_id)
+    await cl.Message(
+        content=(
+            "## Gate D — aprobación final\n\n"
+            "El Supervisor aprobó el resultado. La finalización sigue bloqueada hasta tu decisión."
+        ),
+        author="Human Approval",
+        actions=_actions(gate.gate_id, run_id, gate.allowed_decisions),
+    ).send()
+
+
+async def _show_tool_gate(gate_id: str, run_id: str, worker_id: str | None) -> None:
+    gate = _runtime.approvals.get_gate(gate_id)
+    await cl.Message(
+        content=(
+            "## Gate C — autorización requerida\n\n"
+            f"El worker `{worker_id}` solicita acceso a una herramienta de riesgo.\n\n"
+            f"```json\n{_json_text(gate.context)}\n```"
+        ),
+        author="Human Approval",
+        actions=_actions(
+            gate.gate_id,
+            run_id,
+            gate.allowed_decisions,
+            worker_id=worker_id,
+        ),
+    ).send()
+
+
 async def _run_orchestration(run_id: str) -> None:
     try:
         result = await cl.make_async(_orchestrator.execute_run)(run_id)
@@ -124,21 +154,7 @@ async def _run_orchestration(run_id: str) -> None:
         return
 
     if result.pending_gate_id:
-        gate = _runtime.approvals.get_gate(result.pending_gate_id)
-        await cl.Message(
-            content=(
-                "## Gate C — autorización requerida\n\n"
-                f"El worker `{result.pending_worker_id}` solicita acceso a una herramienta de riesgo.\n\n"
-                f"```json\n{_json_text(gate.context)}\n```"
-            ),
-            author="Human Approval",
-            actions=_actions(
-                gate.gate_id,
-                run_id,
-                gate.allowed_decisions,
-                worker_id=result.pending_worker_id,
-            ),
-        ).send()
+        await _show_tool_gate(result.pending_gate_id, run_id, result.pending_worker_id)
         return
 
     if result.qa_result is not None:
@@ -151,12 +167,7 @@ async def _run_orchestration(run_id: str) -> None:
         ).send()
 
     if result.final_gate_id:
-        gate = _runtime.approvals.get_gate(result.final_gate_id)
-        await cl.Message(
-            content="## Gate D — aprobación final\n\nEl Supervisor aprobó el resultado. La finalización sigue bloqueada hasta tu decisión.",
-            author="Human Approval",
-            actions=_actions(gate.gate_id, run_id, gate.allowed_decisions),
-        ).send()
+        await _show_final_gate(result.final_gate_id, run_id)
     elif result.qa_result is not None:
         state = _coordinator.sessions.get_context(run_id).state
         await cl.Message(
@@ -217,7 +228,7 @@ async def on_message(message: cl.Message) -> None:
             result = _coordinator.start_run(
                 message.content,
                 files=tuple(files),
-                metadata=_run_authorization.owner_metadata(identity),  # type: ignore[union-attr]
+                metadata=_run_authorization.owner_metadata(identity),
                 inline_text_by_name=inline_text_by_name,
             )
             cl.user_session.set("run_id", result.run_id)
@@ -277,41 +288,26 @@ async def on_runtime_gate_decision(action: cl.Action) -> None:
         if gate.kind == "TOOL_RISK":
             if not worker_id:
                 raise RuntimeCoordinatorError("tool-risk gate is missing worker_id")
-            feedback = f"Human decision: {decision.value}"
-            response = await _maybe_request_feedback(decision)
-            if response:
-                feedback = response
-            result = await cl.make_async(_orchestrator.resume_after_tool_gate)(
+            authorization = await cl.make_async(_orchestrator.resume_after_tool_gate)(
                 run_id=run_id,
                 gate_id=gate_id,
                 decision=decision,
                 worker_id=worker_id,
-                feedback=feedback,
+                feedback=f"Human decision: {decision.value}",
                 actor=_actor(),
             )
             await cl.Message(
                 content=f"Gate C resuelto como **{decision.value}**. Reanudando `{worker_id}`...",
                 author="Human Approval",
             ).send()
-            if result.pending_gate_id:
-                pending = _runtime.approvals.get_gate(result.pending_gate_id)
-                await cl.Message(
-                    content=f"El siguiente worker requiere autorización de riesgo: `{result.pending_worker_id}`.",
-                    author="Human Approval",
-                    actions=_actions(
-                        pending.gate_id,
-                        run_id,
-                        pending.allowed_decisions,
-                        worker_id=result.pending_worker_id,
-                    ),
-                ).send()
-            elif result.final_gate_id:
-                final_gate = _runtime.approvals.get_gate(result.final_gate_id)
-                await cl.Message(
-                    content="## Gate D — aprobación final\n\nEl Supervisor aprobó el resultado.",
-                    author="Human Approval",
-                    actions=_actions(final_gate.gate_id, run_id, final_gate.allowed_decisions),
-                ).send()
+            if authorization.pending_gate_id:
+                await _show_tool_gate(
+                    authorization.pending_gate_id,
+                    run_id,
+                    authorization.pending_worker_id,
+                )
+            elif authorization.final_gate_id:
+                await _show_final_gate(authorization.final_gate_id, run_id)
             return
 
         if gate.kind not in {"ARCHITECTURE", "FINAL"}:
@@ -370,10 +366,6 @@ async def _request_feedback() -> str:
         timeout=300,
     ).send()
     return str((response or {}).get("output") or "").strip()
-
-
-async def _maybe_request_feedback(decision: HumanDecisionType) -> str:
-    return ""
 
 
 def _json_text(value: object) -> str:
