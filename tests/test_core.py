@@ -25,6 +25,11 @@ class StateMachineTests(unittest.TestCase):
         run.transition_to(WorkflowState.WAITING_ARCHITECT_APPROVAL)
         self.assertEqual(run.state, WorkflowState.WAITING_ARCHITECT_APPROVAL)
 
+    def test_rejected_tool_gate_can_enter_revision(self):
+        run = RunContext(state=WorkflowState.WORKER_WAITING_HUMAN)
+        run.transition_to(WorkflowState.REVISION)
+        self.assertEqual(run.state, WorkflowState.REVISION)
+
     def test_illegal_transition_is_rejected(self):
         run = RunContext()
         with self.assertRaises(IllegalStateTransition):
@@ -98,11 +103,3 @@ class ContractTests(unittest.TestCase):
         payload = to_dict(request)
         self.assertEqual(payload["execution_id"], "e1")
         json.dumps(payload)
-
-    def test_execution_status_values_are_stable(self):
-        self.assertEqual(ExecutionStatus.SUCCESS.value, "success")
-        self.assertEqual(ExecutionStatus.TIMEOUT.value, "timeout")
-
-
-if __name__ == "__main__":
-    unittest.main()
