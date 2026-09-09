@@ -18,12 +18,7 @@ class ApprovalError(ValueError):
 
 
 class HumanApprovalEngine:
-    """Owns approval-gate lifecycle and immutable decision history.
-
-    The engine deliberately has no UI, Chainlit, LLM, or execution dependencies.
-    Callers may poll `get_gate()` or subscribe externally and present the open
-    gate through any interface.
-    """
+    """Owns approval-gate lifecycle and immutable decision history."""
 
     def __init__(self) -> None:
         self._gates: dict[str, ApprovalGate] = {}
@@ -41,7 +36,6 @@ class HumanApprovalEngine:
         allowed_decisions: tuple[HumanDecisionType, ...] | None = None,
         gate_id: str | None = None,
     ) -> ApprovalGate:
-        """Create an open gate and return an immutable snapshot."""
         now = _utc_now()
         gate = ApprovalGate(
             gate_id=gate_id or f"gate-{uuid.uuid4().hex}",
@@ -80,6 +74,21 @@ class HumanApprovalEngine:
                 gates = [gate for gate in gates if gate.run_id == run_id]
             return tuple(_copy_gate(gate) for gate in gates)
 
+    def list_gates(
+        self,
+        *,
+        run_id: str | None = None,
+        kind: str | None = None,
+    ) -> tuple[ApprovalGate, ...]:
+        """List immutable gate snapshots, optionally filtered by run and kind."""
+        with self._lock:
+            gates = list(self._gates.values())
+            if run_id is not None:
+                gates = [gate for gate in gates if gate.run_id == run_id]
+            if kind is not None:
+                gates = [gate for gate in gates if gate.kind == kind]
+            return tuple(_copy_gate(gate) for gate in gates)
+
     def resolve_gate(
         self,
         *,
@@ -89,7 +98,6 @@ class HumanApprovalEngine:
         actor: str = "human",
         timestamp: str | None = None,
     ) -> HumanDecision:
-        """Resolve an open gate exactly once and append an immutable audit record."""
         if not isinstance(decision, HumanDecisionType):
             try:
                 decision = HumanDecisionType(decision)
@@ -99,7 +107,6 @@ class HumanApprovalEngine:
             raise ApprovalError("feedback must be a string")
         if not isinstance(actor, str) or not actor.strip():
             raise ApprovalError("actor cannot be empty")
-
         resolved_at = timestamp or _utc_now()
         with self._lock:
             gate = self._gates.get(gate_id)
@@ -112,7 +119,6 @@ class HumanApprovalEngine:
                 raise ApprovalError(
                     f"decision {decision.value!r} is not allowed for gate {gate_id}; allowed: {allowed}"
                 )
-
             record = HumanDecision(
                 gate_id=gate.gate_id,
                 run_id=gate.run_id,
@@ -126,7 +132,6 @@ class HumanApprovalEngine:
             return record
 
     def cancel_gate(self, gate_id: str) -> ApprovalGate:
-        """Cancel an open gate without inventing a human decision."""
         with self._lock:
             gate = self._gates.get(gate_id)
             if gate is None:
