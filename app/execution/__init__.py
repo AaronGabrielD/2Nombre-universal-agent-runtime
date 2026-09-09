@@ -1,14 +1,10 @@
-"""Execution gateway and interchangeable backend adapters (M08)."""
+"""Execution backends and gateway interfaces."""
 
-from .colab import ColabBackendError, ColabExecutionBackend
-from .models import ExecutionAuthorization, ExecutionBackendInfo
+from .docker_backend import DockerExecutionBackend
 from .service import ExecutionBackend, ExecutionGateway, ExecutionGatewayError
 
 __all__ = [
-    "ColabBackendError",
-    "ColabExecutionBackend",
-    "ExecutionAuthorization",
-    "ExecutionBackendInfo",
+    "DockerExecutionBackend",
     "ExecutionBackend",
     "ExecutionGateway",
     "ExecutionGatewayError",
