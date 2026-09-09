@@ -1,60 +1,70 @@
 # Universal Agent Runtime
 
-Universal multi-agent runtime under active construction.
+Universal multi-agent runtime with explicit human-approval gates, provider-neutral execution, durable identity, persistence, and optional hardened container execution.
 
 ## Progress
 
-- **M00 — Foundation & Contracts:** ✅
-- **M01 — Session Manager:** ✅
-- **M02 — Universal Intake:** ✅
-- **M03 — Gemini Adapter:** ✅
-- **M04 — Universal Architect:** ✅
-- **M05 — Human Approval Engine:** ✅
-- **M06 — Worker Factory & Dispatcher:** ✅
-- **M07 — Tool Registry & Capability Registry:** ✅
-- **M08 — Execution Gateway:** ✅
-- **M09 — Supervisor & QA:** ✅
-- **M10 — Runtime Coordinator:** ✅
-- **M11 — Chainlit Presentation:** ✅
-- **M12 — Colab Execution Service:** ✅
-- **M13 — Worker Runtime Adapter:** ✅
-- **M14 — CrewAI Worker Adapter:** ✅
-- **M15 — Integrated Orchestrator:** ✅
+M00–M26 are complete. M27–M29 complete the deferred execution-isolation, persistence, and cloud-validation layers.
+
+- **M00–M26:** ✅ Foundation, lifecycle, intake, Gemini, Architect, human gates, workers, tools, execution gateway, Colab runtime, CrewAI, orchestration, persistence, authentication, concurrency, QA, deployment boundary, multi-user identity.
+- **M27 — Stronger Docker Execution Isolation:** ✅ Optional Docker backend with network isolation by default, read-only root filesystem, dropped capabilities, no-new-privileges, resource limits, non-root execution, and bounded output.
+- **M28 — Versioned Persistence:** ✅ Transactional SQLite migrations plus a durable JSON session repository with explicit schema versioning and atomic writes.
+- **M29 — Live Cloud Validation:** ✅ Dependency-free smoke-test harness for a reachable M12 service, including health, authenticated execution, and authentication-boundary checks.
 
 ## Architecture
 
-See `BLUEPRINT_MASTER_v1.md` for the master architecture and `docs/architecture/` for milestone boundaries.
+See `BLUEPRINT_MASTER_v1.md` for the master architecture and `docs/architecture/` plus the M26–M29 milestone documents for detailed boundaries.
 
-## Runtime coordination
+```text
+User / Chainlit
+  -> M22/M26 Authentication + Durable Identity
+  -> Run Ownership Authorization
+  -> M02 Intake
+  -> M04 Architect
+  -> Gate A
+  -> M06 Worker Factory / dependency batches
+  -> M07 Tool Registry + M16 authorization
+  -> Gate C when required
+  -> M14 CrewAI worker adapter
+  -> M13 Worker Runtime
+  -> M08 Execution Gateway
+  -> M12 Colab or M27 Docker backend
+  -> Session evidence / durable persistence
+  -> M09 Supervisor / QA
+  -> Gate D
+  -> Completed | Revision | Rejected
+```
 
-M10 connects the existing lifecycle services while preserving their boundaries. It enforces the human approval checkpoints required before execution and completion.
+## Persistence
 
-See `docs/architecture/M10_RUNTIME_COORDINATOR.md`.
+M21 provides a trusted-storage SQLite session repository using the stable `SessionRepository` boundary. M28 additionally provides schema-versioned migrations and a portable JSON session repository that reconstructs domain objects explicitly.
 
-## Presentation
+## Execution isolation
 
-M11 adds the Chainlit interface for intake, architecture display, and human Gate A interaction. It deliberately does not execute workers or tools from the UI layer.
+M23 remains the static Python admission policy for the Colab service. M27 adds Docker isolation when a Docker daemon and preloaded image are available. The Docker backend never pulls an image automatically.
 
-See `docs/architecture/M11_CHAINLIT_PRESENTATION.md`.
+Neither mechanism should be treated as a high-assurance hostile multi-tenant sandbox; deployment and host hardening remain part of the security boundary.
+
+## Cloud validation
+
+Run the M29 external smoke harness against an actual reachable runtime service:
+
+```bash
+python scripts/m29_cloud_smoke.py
+```
+
+Configure `UAR_SMOKE_BASE_URL` and `RUNTIME_EXECUTION_TOKEN` without committing secrets. The repository does not fabricate a live Colab/Gemini pass when those external credentials/endpoints are unavailable.
 
 ## CrewAI integration
 
-M14 adds an optional CrewAI adapter. CrewAI generates worker execution plans, but M13/M08 remain the exclusive execution path and M05 remains authoritative for human approval.
-
-Install the optional integration with:
+Install the optional CrewAI integration with:
 
 ```bash
 pip install -r requirements-crewai.txt
 ```
 
-See `docs/architecture/M14_CREWAI_ADAPTER.md`.
-
-## Integrated execution
-
-M15 connects approved architecture to worker dispatch, provider-generated worker plans, the execution gateway, session evidence, and deterministic QA. A QA PASS opens Gate D; it does not complete the run.
-
-See `docs/architecture/M15_INTEGRATED_ORCHESTRATOR.md`.
+CrewAI remains a worker-planning adapter; execution and human approval stay behind the runtime's authoritative boundaries.
 
 ## Security rule
 
-Never commit `.env`, API keys, tokens, credentials, or local runtime artifacts.
+Never commit `.env`, API keys, tokens, credentials, local databases, or runtime artifacts.
