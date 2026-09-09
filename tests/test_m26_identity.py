@@ -64,7 +64,7 @@ class M26IdentityTests(unittest.TestCase):
             self.assertEqual(identity.role, UserRole.ADMIN)
             self.assertEqual(len(reopened.list_users()), 1)
 
-    def test_environment_bootstrap_is_persisted(self):
+    def test_environment_bootstrap_requires_valid_password_and_is_persisted(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             path = os.path.join(temp_dir, "users.db")
             old = {key: os.environ.get(key) for key in (
@@ -77,6 +77,9 @@ class M26IdentityTests(unittest.TestCase):
 
                 repository = SQLiteUserRepository(path)
                 service = IdentityService(repository)
+                self.assertIsNone(service.authenticate("bootstrap", "wrong-password"))
+                self.assertEqual(len(repository.list_users()), 0)
+
                 first = service.authenticate("bootstrap", "bootstrap-password")
                 second = service.authenticate("bootstrap", "bootstrap-password")
                 self.assertIsNotNone(first)
