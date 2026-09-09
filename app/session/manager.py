@@ -38,6 +38,7 @@ class SessionManager:
         with self._lock:
             record = self.repository.get(run_id)
             record.context.transition_to(target)
+            self.repository.save(record)
             return deepcopy(record.context)
 
     def add_message(
@@ -58,38 +59,52 @@ class SessionManager:
             metadata=deepcopy(metadata or {}),
         )
         with self._lock:
-            self.repository.get(run_id).messages.append(message)
+            record = self.repository.get(run_id)
+            record.messages.append(message)
+            self.repository.save(record)
         return message
 
     def add_artifact(self, run_id: str, artifact: ArtifactRef) -> None:
         with self._lock:
-            self.repository.get(run_id).artifacts.append(artifact)
+            record = self.repository.get(run_id)
+            record.artifacts.append(artifact)
+            self.repository.save(record)
 
     def add_decision(self, run_id: str, decision: HumanDecision) -> None:
         if decision.run_id != run_id:
             raise ValueError("HumanDecision.run_id must match the target session")
         with self._lock:
-            self.repository.get(run_id).decisions.append(decision)
+            record = self.repository.get(run_id)
+            record.decisions.append(decision)
+            self.repository.save(record)
 
     def add_execution_result(self, run_id: str, result: ExecutionResult) -> None:
         with self._lock:
-            self.repository.get(run_id).execution_results.append(result)
+            record = self.repository.get(run_id)
+            record.execution_results.append(result)
+            self.repository.save(record)
 
     def set_architecture_plan(self, run_id: str, plan: ArchitecturePlan) -> None:
         with self._lock:
-            self.repository.get(run_id).architecture_plan = plan
+            record = self.repository.get(run_id)
+            record.architecture_plan = plan
+            self.repository.save(record)
 
     def set_worker_output(self, run_id: str, output: WorkerOutput) -> None:
         if output.run_id != run_id:
             raise ValueError("WorkerOutput.run_id must match the target session")
         with self._lock:
-            self.repository.get(run_id).worker_outputs[output.worker_id] = output
+            record = self.repository.get(run_id)
+            record.worker_outputs[output.worker_id] = output
+            self.repository.save(record)
 
     def set_final_result(self, run_id: str, result: FinalResult) -> None:
         if result.run_id != run_id:
             raise ValueError("FinalResult.run_id must match the target session")
         with self._lock:
-            self.repository.get(run_id).final_result = result
+            record = self.repository.get(run_id)
+            record.final_result = result
+            self.repository.save(record)
 
     def snapshot(self, run_id: str) -> SessionRecord:
         """Return an isolated copy without exposing mutable repository state."""
