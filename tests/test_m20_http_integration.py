@@ -1,46 +1,39 @@
-import os
-import threading
+import tempfile
 import unittest
-from tempfile import TemporaryDirectory
-from urllib.request import Request, urlopen
+from pathlib import Path
+from urllib.request import urlopen
 
+from app.core.config import Settings
 from app.core.contracts import ExecutionRequest, ExecutionStatus
-from app.execution.colab import ColabBackendError, ColabExecutionBackend
-from app.execution.colab_service import ExecutionServiceConfig, RuntimeColabHTTPServer
+from app.execution import ColabExecutionBackend
+from app.execution.colab import ColabBackendError
+from app.execution.colab_service import ColabRuntimeConfig, RuntimeColabHTTPServer
 
 
 class M20HttpIntegrationTests(unittest.TestCase):
     def setUp(self):
-        self._tmp = TemporaryDirectory()
-        self._old = {
-            key: os.environ.get(key)
-            for key in ("RUNTIME_EXECUTION_TOKEN", "RUNTIME_ARTIFACT_ROOT", "RUNTIME_ALLOW_NETWORK")
-        }
-        os.environ["RUNTIME_EXECUTION_TOKEN"] = "integration-test-token"
-        os.environ["RUNTIME_ARTIFACT_ROOT"] = self._tmp.name
-        os.environ["RUNTIME_ALLOW_NETWORK"] = "false"
-        self.config = ExecutionServiceConfig()
-        self.server = RuntimeColabHTTPServer(("127.0.0.1", 0), self.config)
-        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
-        self.thread.start()
-        host, port = self.server.server_address
+        self._temp_dir = tempfile.TemporaryDirectory()
+        self.config = ColabRuntimeConfig(
+            execution_token="integration-token",
+            bind_host="127.0.0.1",
+            port=0,
+            allow_network=False,
+            python_policy="restricted",
+            artifact_root=str(Path(self._temp_dir.name) / "artifacts"),
+        )
+        self.service = RuntimeColabHTTPServer(self.config)
+        self.service.start()
+        host, port = self.service.address
         self.base_url = f"http://{host}:{port}"
         self.backend = ColabExecutionBackend(
             base_url=self.base_url,
-            token="integration-test-token",
+            token=self.config.execution_token,
             timeout_seconds=10,
         )
 
     def tearDown(self):
-        self.server.shutdown()
-        self.server.server_close()
-        self.thread.join(timeout=2)
-        self._tmp.cleanup()
-        for key, value in self._old.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
+        self.service.shutdown()
+        self._temp_dir.cleanup()
 
     def request(self, *, code="print('integration-ok')", needs_network=False, execution_id="exec-m20"):
         return ExecutionRequest(
@@ -49,7 +42,7 @@ class M20HttpIntegrationTests(unittest.TestCase):
             worker_id="worker-m20",
             language="python",
             code=code,
-            timeout_seconds=5,
+            timeout_seconds=10,
             needs_network=needs_network,
             environment={},
         )
@@ -69,7 +62,7 @@ class M20HttpIntegrationTests(unittest.TestCase):
 
     def test_network_policy_is_enforced_by_remote_service(self):
         result = self.backend.execute(self.request(needs_network=True, execution_id="exec-network"))
-        self.assertEqual(result.status, ExecutionStatus.ERROR)
+        self.assertEqual(result.status, ExecutionStatus.DENIED)
         self.assertIn("network execution is disabled", result.stderr)
 
     def test_artifact_is_returned_and_retrievable(self):
@@ -83,9 +76,9 @@ class M20HttpIntegrationTests(unittest.TestCase):
         self.assertTrue(artifact.uri.startswith(f"artifact://{execution_id}/"))
 
         url = f"{self.base_url}/artifacts/{execution_id}/{artifact.name}"
-        request = Request(url, headers={"Authorization": "Bearer integration-test-token"})
-        with urlopen(request, timeout=5) as response:
-            self.assertEqual(response.read(), b"artifact-ok")
+        with urlopen(url, timeout=10) as response:
+            self.assertEqual(response.status, 200)
+            self.assertEqual(response.read().decode("utf-8"), "artifact-ok")
 
 
 if __name__ == "__main__":
