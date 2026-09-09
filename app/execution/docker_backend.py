@@ -6,8 +6,6 @@ closed when it is not.
 """
 from __future__ import annotations
 
-import json
-import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -34,6 +32,7 @@ class DockerExecutionBackend(ExecutionBackend):
         cpus: str = "1.0",
         pids_limit: int = 128,
         max_output_bytes: int = 256 * 1024,
+        artifact_root: str | None = None,
     ) -> None:
         if not image.strip() or any(ch in image for ch in "\r\n"):
             raise ValueError("image must be a non-empty single-line value")
@@ -48,6 +47,9 @@ class DockerExecutionBackend(ExecutionBackend):
         self.cpus = cpus
         self.pids_limit = pids_limit
         self.max_output_bytes = max_output_bytes
+        self.artifact_root = Path(artifact_root).expanduser().resolve() if artifact_root else None
+        if self.artifact_root:
+            self.artifact_root.mkdir(parents=True, exist_ok=True)
 
     @property
     def info(self) -> ExecutionBackendInfo:
@@ -106,7 +108,7 @@ class DockerExecutionBackend(ExecutionBackend):
             stdout = self._bounded(completed.stdout)
             stderr = self._bounded(completed.stderr)
             status = ExecutionStatus.SUCCESS if completed.returncode == 0 else ExecutionStatus.ERROR
-            artifacts = self._collect_artifacts(root, request.execution_id)
+            artifacts = self._persist_artifacts(root, request.execution_id)
             return self._result(request, status, stdout, stderr, completed.returncode, started, artifacts)
 
     def _docker_command(self, request: ExecutionRequest, root: Path) -> list[str]:
@@ -143,12 +145,23 @@ class DockerExecutionBackend(ExecutionBackend):
         command.extend([self.image, "python", "-I", "/workspace/main.py"])
         return command
 
-    def _collect_artifacts(self, root: Path, execution_id: str) -> tuple[ArtifactRef, ...]:
+    def _persist_artifacts(self, root: Path, execution_id: str) -> tuple[ArtifactRef, ...]:
+        if self.artifact_root is None:
+            return ()
+        destination_root = (self.artifact_root / execution_id).resolve()
+        destination_root.mkdir(parents=True, exist_ok=True)
         artifacts: list[ArtifactRef] = []
         for path in sorted(root.rglob("*")):
             if not path.is_file() or path.name == "main.py":
                 continue
             relative = path.relative_to(root)
+            destination = (destination_root / relative).resolve()
+            try:
+                destination.relative_to(destination_root)
+            except ValueError:
+                continue
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, destination)
             artifacts.append(
                 ArtifactRef(
                     artifact_id=f"artifact-{execution_id}-{len(artifacts)}",
