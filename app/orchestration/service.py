@@ -268,13 +268,15 @@ class IntegratedOrchestrator:
         final_gate_id: str | None = None
         if qa.status == QAStatus.PASS:
             final_gate_id = self.coordinator.record_supervisor_result(qa)
-        else:
+        elif qa.status == QAStatus.REVISE:
             self.coordinator.record_revision(
                 run_id,
-                reason=f"Supervisor QA returned {qa.status.value}",
+                reason="Supervisor requested a revision",
                 source="supervisor",
                 feedback=qa.summary,
             )
+        else:
+            self.sessions.transition(run_id, WorkflowState.FAILED)
 
         return OrchestrationResult(
             run_id=run_id,
