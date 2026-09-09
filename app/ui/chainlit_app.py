@@ -18,12 +18,25 @@ from app.core.states import WorkflowState
 from app.intake.models import IntakeFile
 from app.llm.gemini import GeminiAdapter
 from app.runtime.service import RuntimeCoordinator, RuntimeCoordinatorError
+from app.ui.auth import authenticate_from_environment
 
 
 settings = get_settings()
 _coordinator = RuntimeCoordinator(
     architect=UniversalArchitect(GeminiAdapter(settings), settings=settings),
 )
+
+
+@cl.password_auth_callback
+def password_auth_callback(username: str, password: str):
+    """Authenticate the configured UI account using a PBKDF2 password record."""
+    identity = authenticate_from_environment(username, password)
+    if identity is None:
+        return None
+    return cl.User(
+        identifier=identity["identifier"],
+        metadata=identity["metadata"],
+    )
 
 
 def _actor() -> str:
