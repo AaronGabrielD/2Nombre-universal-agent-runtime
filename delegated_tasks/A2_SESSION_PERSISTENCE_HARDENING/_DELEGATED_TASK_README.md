@@ -1,0 +1,1 @@
+This directory is reserved for the isolated A2 delegated audit package. Nothing here is authoritative until independently validated and integrated.
