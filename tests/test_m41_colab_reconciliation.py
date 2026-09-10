@@ -5,8 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from app.execution.colab_reconciler import ColabExecutionReconciler, ColabReconcilerError
-from app.execution.colab_service import ColabCodeExecutor
-from app.execution.colab_service import ExecutionServiceConfig
+from app.execution.colab_service import ColabCodeExecutor, ExecutionServiceConfig
 
 
 class FakeResponse:
@@ -28,10 +27,7 @@ class M41ColabReconciliationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(
                 "os.environ",
-                {
-                    "RUNTIME_EXECUTION_TOKEN": "test-token",
-                    "RUNTIME_ARTIFACT_ROOT": tmp,
-                },
+                {"RUNTIME_EXECUTION_TOKEN": "test-token", "RUNTIME_ARTIFACT_ROOT": tmp},
                 clear=False,
             ):
                 config = ExecutionServiceConfig()
@@ -49,6 +45,7 @@ class M41ColabReconciliationTests(unittest.TestCase):
             result = executor.execute(payload)
             executor.persist_result(result)
             evidence = executor.get_result("exec-41")
+            self.assertIsNotNone(evidence)
             self.assertEqual(evidence["execution_id"], "exec-41")
             self.assertEqual(evidence["status"], "success")
             self.assertNotIn("code", evidence)
@@ -65,16 +62,15 @@ class M41ColabReconciliationTests(unittest.TestCase):
             "artifacts": [],
             "backend": "colab-service",
         }
-        response = FakeResponse(payload)
         reconciler = ColabExecutionReconciler(
             base_url="http://127.0.0.1:8000",
             token="test-token",
         )
-        with patch("app.execution.colab_reconciler.urlopen", return_value=response):
-            result = reconciler.reconcile(
-                execution_id="exec-41",
-                idempotency_key="key-41",
-            )
+        with patch(
+            "app.execution.colab_reconciler.urlopen",
+            return_value=FakeResponse(payload),
+        ):
+            result = reconciler.reconcile(execution_id="exec-41", idempotency_key="key-41")
         self.assertEqual(result.execution_id, "exec-41")
         self.assertEqual(result.status.value, "success")
 
@@ -98,10 +94,7 @@ class M41ColabReconciliationTests(unittest.TestCase):
             return_value=FakeResponse(payload),
         ):
             with self.assertRaises(ColabReconcilerError):
-                reconciler.reconcile(
-                    execution_id="exec-41",
-                    idempotency_key="key-41",
-                )
+                reconciler.reconcile(execution_id="exec-41", idempotency_key="key-41")
 
 
 if __name__ == "__main__":
