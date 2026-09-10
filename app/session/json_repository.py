@@ -8,6 +8,7 @@ from pathlib import Path
 from threading import RLock
 from typing import Any
 
+from app.approval.models import ApprovalGate, GateStatus
 from app.core.contracts import ArchitecturePlan, ArtifactRef, ExecutionResult, ExecutionStatus, FinalResult, HumanDecision, HumanDecisionType, WorkerSpec, to_dict
 from app.core.models import RunContext
 from app.core.states import WorkflowState
@@ -137,6 +138,7 @@ class JsonFileSessionRepository:
             architecture_plan=_plan_from_dict(raw["architecture_plan"]) if raw.get("architecture_plan") else None,
             final_result=_final_result_from_dict(raw["final_result"]) if raw.get("final_result") else None,
         )
+        record.approval_gates.extend(_approval_gate_from_dict(item) for item in raw.get("approval_gates", []))
         return validate_session_record_integrity(record)
 
 
@@ -148,6 +150,28 @@ def _json_safe(value: Any) -> Any:
     if isinstance(value, (list, tuple, set, frozenset)):
         return [_json_safe(item) for item in value]
     return value
+
+
+def _approval_gate_from_dict(raw: dict[str, Any]) -> ApprovalGate:
+    if not isinstance(raw, dict):
+        raise SessionRepositoryError("stored approval gate must be an object")
+    gate = ApprovalGate(
+        gate_id=raw["gate_id"],
+        run_id=raw["run_id"],
+        kind=raw["kind"],
+        title=raw["title"],
+        prompt=raw["prompt"],
+        context=dict(raw.get("context", {})),
+        allowed_decisions=tuple(HumanDecisionType(item) for item in raw.get("allowed_decisions", [])),
+        status=GateStatus(raw.get("status", GateStatus.OPEN.value)),
+        created_at=raw["created_at"],
+        resolved_at=raw.get("resolved_at"),
+    )
+    try:
+        gate.validate()
+    except ValueError as exc:
+        raise SessionRepositoryError(f"stored approval gate {gate.gate_id} is invalid") from exc
+    return gate
 
 
 def _plan_from_dict(raw: dict[str, Any]) -> ArchitecturePlan:
