@@ -1,6 +1,6 @@
 # Implementation status
 
-M00–M40 are implemented in `main` with automated CI coverage. Environment-specific live validation that requires external endpoints or credentials remains intentionally deferred.
+M00–M41 are implemented in `main` with automated CI coverage. Environment-specific live validation that requires external endpoints or credentials remains intentionally deferred.
 
 Current integrated path:
 
@@ -70,7 +70,7 @@ Colab authoritative reconciliation:
 - M12 — Colab Execution Service
 - M13 — Worker Runtime Adapter
 - M14 — CrewAI Worker Adapter
-- M15 — Integrated Orchestrator
+- M15 — Integrated Runtime Orchestration
 - M16 — Tool Authorization + Gate C
 - M17 — Session Concurrency
 - M18 — Controlled Parallel Workers
@@ -82,7 +82,7 @@ Colab authoritative reconciliation:
 - M24 — CI
 - M25 — provider-neutral deployment adapter
 - M26 — multi-user durable identity/authorization
-- M27 — Stronger Docker execution isolation backend
+- M27 — Stronger Docker Execution Isolation
 - M28 — Schema-versioned persistence migrations + JSON durable session backend
 - M29 — Live cloud smoke-validation harness
 - M30 — Integrated runtime composition + Chainlit orchestration
@@ -97,6 +97,7 @@ Colab authoritative reconciliation:
 - M39 — Explicit authoritative backend reconciliation contract
 - M40 — Explicit recovery resume actions
 - M41 — Authoritative Colab execution reconciliation
+- M42 — Failed execution recovery routing hardening
 
 ## Revision and recovery hardening
 
@@ -112,6 +113,8 @@ M40 adds `RecoveryResumeService`, which makes post-restart recovery executable o
 
 M41 adds a concrete Colab implementation of the M39 authority boundary. An authoritative server variant durably records terminal execution evidence as explicit JSON and exposes it through an authenticated `GET /executions/<execution_id>` endpoint. The client `ColabExecutionReconciler` performs read-only evidence lookup and never executes code. Missing evidence remains non-authoritative.
 
+M42 hardens the failed-execution recovery path. An authoritative execution failure is routed through the legal `EXECUTING → SUPERVISING → REVISION → ARCHITECTING` sequence using `RevisionService`; the recovery layer no longer attempts an illegal direct `EXECUTING → REVISION` transition.
+
 ## Security and deployment boundaries
 
 - M27 provides container-level defense in depth when Docker is available; it is not a high-assurance VM boundary.
@@ -125,9 +128,10 @@ M41 adds a concrete Colab implementation of the M39 authority boundary. An autho
 - M39 makes remote reconciliation an explicit capability rather than an implicit side effect; no authoritative remote result is accepted without matching the original `execution_id`.
 - M40 does not bypass human gates and never converts uncertain execution evidence into automatic replay.
 - M41 stores execution evidence explicitly and durably on the remote runtime; it does not store executable source code in the evidence record.
+- M42 preserves the existing state machine and routes failure recovery through the established revision service.
 
 ## Repository readiness
 
-M00–M40 are implemented with automated CI coverage. M41 is the active development milestone. Remaining work is concrete authoritative adapters for other backends, stronger coordinator/recovery integration, richer worker/tool/QA protocols, complete UI/API surfaces, observability, stronger policy enforcement, durable distributed coordination, and broader integration testing.
+M00–M41 are implemented with automated CI coverage. M42 is the active development milestone. Remaining work is concrete authoritative adapters for other backends, stronger coordinator/recovery integration, richer worker/tool/QA protocols, complete UI/API surfaces, observability, stronger policy enforcement, durable distributed coordination, and broader integration testing.
 
 Environment-specific live validation remains intentionally deferred until a reachable runtime endpoint and required credentials are available.
