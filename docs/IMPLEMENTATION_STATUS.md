@@ -1,6 +1,6 @@
 # Implementation status
 
-M00–M41 are implemented in `main` with automated CI coverage. Environment-specific live validation that requires external endpoints or credentials remains intentionally deferred.
+M00–M42 are implemented in `main` with automated CI coverage. Environment-specific live validation that requires external endpoints or credentials remains intentionally deferred.
 
 Current integrated path:
 
@@ -94,6 +94,7 @@ Execution reconciliation:
 - M40 — Explicit recovery resume actions
 - M41 — Durable recovery action audit trail
 - M42 — RuntimeCoordinator recovery facade
+- M43 — Colab authoritative reconciliation client
 
 ## Revision and recovery hardening
 
@@ -111,6 +112,8 @@ M41 adds a durable audit event to every accepted explicit recovery action. The e
 
 M42 exposes recovery inspection and explicit resume through `RuntimeCoordinator`, keeping restart recovery behind the application's canonical coordination boundary. Callers no longer need to construct recovery services directly, while the underlying action validation, reconciliation, audit trail, and fail-closed behavior remain unchanged.
 
+M43 adds `ColabExecutionReconciler`, a concrete HTTP implementation of the provider-neutral `ExecutionReconciler`. It authenticates to a protected execution-authority endpoint, queries by exact `execution_id`, sends the recovery `idempotency_key` as a correlation header, treats HTTP 404 as absence of authoritative evidence, validates the complete `ExecutionResult` payload, and rejects inconsistent execution identifiers or malformed evidence. The client never executes code and is only invoked by an explicit reconciliation operation.
+
 ## Security and deployment boundaries
 
 - M27 provides container-level defense in depth when Docker is available; it is not a high-assurance VM boundary.
@@ -125,9 +128,10 @@ M42 exposes recovery inspection and explicit resume through `RuntimeCoordinator`
 - M40 does not bypass human gates and never converts uncertain execution evidence into automatic replay.
 - M41 persists only recovery metadata; it does not persist executable code, credentials, or idempotency keys.
 - M42 adds no new execution authority; it only centralizes access to already-controlled recovery operations.
+- M43 treats the Colab authority as read-only during reconciliation; no request is allowed to trigger fresh code execution.
 
 ## Repository readiness
 
-M00–M41 are implemented with automated CI coverage. M42 is the active development milestone. Remaining work is concrete authoritative adapters for selected remote backends, richer worker/tool/QA protocols, complete UI/API surfaces, observability, stronger policy enforcement, durable distributed coordination, and broader integration testing.
+M00–M42 are implemented with automated CI coverage. M43 is the active development milestone. Remaining work is the authoritative execution record endpoint on the remote Colab service, richer worker/tool/QA protocols, complete UI/API surfaces, observability, stronger policy enforcement, durable distributed coordination, and broader integration testing.
 
 Environment-specific live validation remains intentionally deferred until a reachable runtime endpoint and required credentials are available.
