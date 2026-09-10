@@ -1,6 +1,6 @@
 # Implementation status
 
-M00–M45 are implemented in `main` with automated CI coverage. Environment-specific live validation that requires external endpoints or credentials remains intentionally deferred.
+M00–M46 are implemented in `main` with automated CI coverage. Environment-specific live validation that requires external endpoints or credentials remains intentionally deferred.
 
 Current integrated path:
 
@@ -160,6 +160,6 @@ M46 also adds `RunExecutionReconciliationService`, which enumerates the latest d
 
 ## Repository readiness
 
-M00–M46 are implemented on the current integration path; the run-wide reconciliation work is the remaining M46 candidate pending fresh CI validation on its updated branch. Remaining work is richer worker/tool/QA protocols, complete UI/API surfaces, observability, stronger policy enforcement, durable distributed coordination, and broader integration testing.
+M00–M46 are implemented on the current integration path, including the restored M14 CrewAI validation tests and the completed M46 reconciliation work. The repository has no remaining open implementation issues; the remaining items are intentionally deferred capabilities and environment-dependent validation already identified by the project plan.
 
 Environment-specific live validation remains intentionally deferred until a reachable runtime endpoint and required credentials are available.
