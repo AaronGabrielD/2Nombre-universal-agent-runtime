@@ -1,6 +1,6 @@
 # Implementation status
 
-M00–M35 are implemented in `main` with automated CI coverage. Environment-specific live validation that requires external endpoints or credentials remains intentionally deferred.
+M00–M36 are implemented in `main` with automated CI coverage. Environment-specific live validation that requires external endpoints or credentials remains intentionally deferred.
 
 Current integrated path:
 
@@ -32,6 +32,12 @@ Restart recovery path:
   -> RecoveryService.inspect()
   -> explicit recovery checkpoint
   -> no automatic execution/replay
+
+Execution replay protection:
+  -> ExecutionLeaseService
+  -> deterministic idempotency key
+  -> RUNNING lease blocks duplicate replay
+  -> COMPLETED lease reuses persisted execution result
 ```
 
 ## Milestones
@@ -73,10 +79,13 @@ Restart recovery path:
 - M34 — Revision limits and recovery-loop hardening
 - M35 — Durable session discovery for restart recovery
 - M36 — Explicit post-restart recovery checkpoints
+- M37 — Durable execution leases and replay protection
 
 ## Revision and recovery hardening
 
 M32 adds explicit revision records and durable history. M33 routes recoverable Supervisor QA revisions and Gate C denials through `RuntimeCoordinator` and `RevisionService`, returning the run to `ARCHITECTING` instead of mutating `REVISION` directly. M34 adds a per-service configurable revision ceiling (default 3) and rejects additional revision requests before mutating workflow state. M35 adds repository-wide session enumeration and `SessionManager.list_recoverable_sessions()` so a new process can discover non-terminal runs from SQLite, JSON, or in-memory storage without automatically executing anything. M36 adds explicit recovery checkpoints that classify the persisted state and evidence without replaying worker execution or bypassing human gates.
+
+M37 adds a durable execution lease for every worker task. A deterministic idempotency key identifies the same run/worker/task/code combination. An active lease blocks a second execution attempt, while a completed lease reuses the persisted execution result instead of invoking the backend again.
 
 ## Security and deployment boundaries
 
@@ -86,9 +95,10 @@ M32 adds explicit revision records and durable history. M33 routes recoverable S
 - M25 remains provider-neutral deployment rendering; it does not provision third-party infrastructure automatically.
 - Direct tool handlers remain declarative and execution stays behind M08.
 - M36 deliberately treats a persisted `EXECUTING` state as requiring reconciliation rather than automatic replay because durable session state does not prove whether an external execution was already committed.
+- M37 stores lease metadata and identifiers only; executable code is not persisted by the lease service.
 
 ## Repository readiness
 
-M00–M35 are implemented with automated CI coverage; M36 is pending its PR CI validation. Remaining work is post-blueprint hardening and productization: explicit coordinator resume, richer worker/tool/QA protocols, complete UI/API surfaces, observability, stronger policy enforcement, durable distributed coordination, execution leases/idempotency, and broader integration testing.
+M00–M36 are implemented with automated CI coverage. M37 is pending its PR CI validation. Remaining work is explicit coordinator resume, stronger execution reconciliation for remote backends, richer worker/tool/QA protocols, complete UI/API surfaces, observability, stronger policy enforcement, durable distributed coordination, and broader integration testing.
 
 Environment-specific live validation remains intentionally deferred until a reachable runtime endpoint and required credentials are available.
