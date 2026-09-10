@@ -1,6 +1,6 @@
 # Implementation status
 
-M00–M37 are implemented in `main` with automated CI coverage. Environment-specific live validation that requires external endpoints or credentials remains intentionally deferred.
+M00–M38 are implemented in `main` with automated CI coverage. Environment-specific live validation that requires external endpoints or credentials remains intentionally deferred.
 
 Current integrated path:
 
@@ -42,8 +42,9 @@ Execution replay protection:
 Execution reconciliation:
   -> ExecutionReconciliationService
   -> local durable evidence inspection
-  -> COMPLETED / FAILED / PENDING_BACKEND_CHECK / NO_LEASE
-  -> remote backend is not invoked implicitly
+  -> explicit backend authority when configured
+  -> authoritative result persisted locally
+  -> no implicit remote calls or retry
 ```
 
 ## Milestones
@@ -87,14 +88,17 @@ Execution reconciliation:
 - M36 — Explicit post-restart recovery checkpoints
 - M37 — Durable execution leases and replay protection
 - M38 — Execution reconciliation from durable evidence
+- M39 — Explicit authoritative backend reconciliation contract
 
 ## Revision and recovery hardening
 
-M32 adds explicit revision records and durable history. M33 routes recoverable Supervisor QA revisions and Gate C denials through `RuntimeCoordinator` and `RevisionService`, returning the run to `ARCHITECTING` instead of mutating `REVISION` directly. M34 adds a per-service configurable revision ceiling (default 3) and rejects additional revision requests before mutating workflow state. M35 adds repository-wide session enumeration and `SessionManager.list_recoverable_sessions()` so a new process can discover non-terminal runs from SQLite, JSON, or in-memory storage without automatically executing anything. M36 adds explicit recovery checkpoints that classify the persisted state and evidence without replaying worker execution or bypassing human gates.
+M32 adds explicit revision records and durable history. M33 routes recoverable Supervisor QA revisions and Gate C denials through `RuntimeCoordinator` and `RevisionService`, returning the run to `ARCHITECTING` instead of mutating `REVISION` directly. M34 adds a per-service configurable revision ceiling (default 3) and rejects additional revision requests before mutating workflow state. M35 adds repository-wide session enumeration and `SessionManager.list_recoverable_sessions()` so a new process can discover non-terminal runs from SQLite, JSON, or in-memory storage without automatically executing anything. M36 adds explicit recovery checkpoints that classify persisted state and evidence without replaying worker execution or bypassing human gates.
 
 M37 adds a durable execution lease for every worker task. A deterministic idempotency key identifies the same run/worker/task/code combination. An active lease blocks a second execution attempt, while a completed lease reuses the persisted execution result instead of invoking the backend again.
 
 M38 adds an execution reconciliation layer that correlates a durable lease with persisted `ExecutionResult` evidence. A task is only locally classified as completed or failed when a matching durable result exists. An active lease without a result becomes `PENDING_BACKEND_CHECK`; the runtime does not silently retry it.
+
+M39 adds an explicit provider-neutral `ExecutionReconciler` contract. `ExecutionReconciliationService.reconcile_backend()` may query a configured backend authority only when called explicitly, rejects inconsistent execution identifiers, persists returned authoritative evidence, and refuses retry when the backend is unavailable or cannot produce a result.
 
 ## Security and deployment boundaries
 
@@ -105,10 +109,11 @@ M38 adds an execution reconciliation layer that correlates a durable lease with 
 - Direct tool handlers remain declarative and execution stays behind M08.
 - M36 deliberately treats a persisted `EXECUTING` state as requiring reconciliation rather than automatic replay because durable session state does not prove whether an external execution was already committed.
 - M37 stores lease metadata and identifiers only; executable code is not persisted by the lease service.
-- M38 performs local evidence reconciliation only; authoritative remote completion requires an explicit backend reconciliation capability in a future milestone.
+- M38 performs local evidence reconciliation only.
+- M39 makes remote reconciliation an explicit capability rather than an implicit side effect; no authoritative remote result is accepted without matching the original `execution_id`.
 
 ## Repository readiness
 
-M00–M37 are implemented with automated CI coverage. M38 is pending its PR CI validation. Remaining work is explicit coordinator resume, authoritative remote execution reconciliation, richer worker/tool/QA protocols, complete UI/API surfaces, observability, stronger policy enforcement, durable distributed coordination, and broader integration testing.
+M00–M38 are implemented with automated CI coverage. M39 is the active development milestone. Remaining work is explicit coordinator resume, concrete authoritative adapters for selected remote backends, richer worker/tool/QA protocols, complete UI/API surfaces, observability, stronger policy enforcement, durable distributed coordination, and broader integration testing.
 
 Environment-specific live validation remains intentionally deferred until a reachable runtime endpoint and required credentials are available.
