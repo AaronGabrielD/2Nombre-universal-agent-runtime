@@ -1,6 +1,7 @@
 import os
 import tempfile
 import unittest
+from dataclasses import replace
 from unittest.mock import patch
 
 from app.core.config import Settings
@@ -48,10 +49,12 @@ class M45RecoveryWiringTests(unittest.TestCase):
             ColabExecutionReconciler,
         )
 
-    def test_runtime_leaves_backend_authority_disabled_without_gateway_credentials(self):
-        settings = _settings()
-        settings.execution_gateway_url = None
-        settings.execution_gateway_token = None
+    def test_runtime_leaves_backend_authority_disabled_without_gateway(self):
+        settings = replace(
+            _settings(),
+            execution_gateway_url=None,
+            execution_gateway_token=None,
+        )
         with tempfile.TemporaryDirectory() as directory:
             with patch.dict(
                 os.environ,
