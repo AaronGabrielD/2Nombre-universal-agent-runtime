@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from uuid import uuid4
 from typing import Any
 
+from app.approval.models import ApprovalGate
 from app.core.contracts import (
     ArchitecturePlan,
     ArtifactRef,
@@ -49,5 +50,13 @@ class SessionRecord:
     decisions: list[HumanDecision] = field(default_factory=list)
     execution_results: list[ExecutionResult] = field(default_factory=list)
     worker_outputs: dict[str, WorkerOutput] = field(default_factory=dict)
+    approval_gates: list[ApprovalGate] = field(default_factory=list)
     architecture_plan: ArchitecturePlan | None = None
     final_result: FinalResult | None = None
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        """Backfill the gate collection when loading pre-gate-persistence pickles."""
+        for field_name, value in state.items():
+            object.__setattr__(self, field_name, value)
+        if not hasattr(self, "approval_gates"):
+            object.__setattr__(self, "approval_gates", [])
