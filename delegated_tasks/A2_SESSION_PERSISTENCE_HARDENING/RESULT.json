@@ -1,0 +1,60 @@
+{
+  "task": "A2_SESSION_PERSISTENCE_HARDENING",
+  "status": "APPROVED_WITH_WARNINGS",
+  "repository": "AaronGabrielD/2Nombre-universal-agent-runtime",
+  "baseline": {
+    "branch": "main",
+    "commit": "00777ce5d228de1dd4bb59bbdb07fbede2f5434a",
+    "commit_message": "revert: remove delegated task from main"
+  },
+  "audit": {
+    "mode": "static_source_audit",
+    "production_files_modified": false,
+    "integration_status": "not_integrated",
+    "runtime_tests_executed": false,
+    "runtime_test_reason": "No local project checkout was available; outbound GitHub DNS/network access was unavailable in the execution environment.",
+    "latest_baseline_ci_evidence": "No workflow runs were associated with the audited main commit."
+  },
+  "findings": {
+    "failure": 5,
+    "verified": 6,
+    "not_verified": 1,
+    "not_applicable": 1
+  },
+  "confirmed_failures": [
+    "A2-01 JSON filename/payload run_id mismatch is not rejected.",
+    "A2-02 SQLite row-key/payload run_id mismatch is not rejected.",
+    "A2-03 malformed JSON container shapes can escape as AttributeError instead of SessionRepositoryError.",
+    "A2-04 reconstructed SessionRecord values bypass M31 validation and session ownership checks.",
+    "A2-05 InMemorySessionRepository exposes live mutable SessionRecord instances."
+  ],
+  "positive_controls": [
+    "A2-07 JSON writes already use sibling temp file plus os.replace().",
+    "A2-08 JSON path construction rejects separators, NUL, CR, and LF.",
+    "A2-09 repository/manager locking is instance-local and M28 documents single-process/low-contention JSON scope.",
+    "A2-11 workflow state transitions remain centralized and human gates remain in RuntimeCoordinator."
+  ],
+  "design_limitation": {
+    "sqlite_pickle": "SQLiteSessionRepository uses pickle and is explicitly trusted-storage-only; attacker-controlled database files are out of scope for a security guarantee."
+  },
+  "candidate_tests": {
+    "files": [
+      "delegated_tasks/A2_SESSION_PERSISTENCE_HARDENING/tests/test_a2_persistence_hardening.py",
+      "delegated_tasks/A2_SESSION_PERSISTENCE_HARDENING/tests/test_a2_json_atomicity.py"
+    ],
+    "executed": false
+  },
+  "proposed_production_files": [
+    "app/session/models.py",
+    "app/session/repository.py",
+    "app/session/json_repository.py"
+  ],
+  "non_goals_preserved": [
+    "No new workflow states or phases.",
+    "No changes to human approval gates.",
+    "No automatic recovery or replay.",
+    "No new persistence provider or service.",
+    "No multi-process transactional guarantee for JSON.",
+    "No claim that SQLite/pickle is safe for attacker-controlled storage."
+  ]
+}
