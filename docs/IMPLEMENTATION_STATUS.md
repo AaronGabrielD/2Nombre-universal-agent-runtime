@@ -112,3 +112,5 @@ M38 adds an execution reconciliation layer that correlates leases with persisted
 M00–M37 are implemented with automated CI coverage. M38 is pending its PR CI validation. Remaining work is explicit coordinator resume, authoritative remote execution reconciliation, richer worker/tool/QA protocols, complete UI/API surfaces, observability, stronger policy enforcement, durable distributed coordination, and broader integration testing.
 
 Environment-specific live validation remains intentionally deferred until a reachable runtime endpoint and required credentials are available.
+
+<!-- M38 CI synchronization marker. -->
