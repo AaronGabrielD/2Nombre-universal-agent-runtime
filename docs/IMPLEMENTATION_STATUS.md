@@ -1,6 +1,6 @@
 # Implementation status
 
-M00–M46 are implemented in `main` with automated CI coverage. Environment-specific live validation that requires external endpoints or credentials remains intentionally deferred.
+M00–M45 are implemented in `main` with automated CI coverage. M46 is proposed in PR #63 and is pending CI validation before integration. Environment-specific live validation that requires external endpoints or credentials remains intentionally deferred.
 
 Current integrated path:
 
@@ -42,7 +42,7 @@ Execution replay protection:
   -> COMPLETED lease reuses persisted execution result
 
 Execution reconciliation:
-  -> RunExecutionReconciliationService
+  -> RunExecutionReconciliationService [M46 proposal]
   -> latest durable lease for every task
   -> local durable evidence inspection
   -> explicit backend authority when configured
@@ -110,7 +110,7 @@ Chainlit recovery surface:
 - M43 — Colab authoritative reconciliation client
 - M44 — Explicit durable runtime session persistence selection
 - M45 — Authenticated Chainlit recovery surface and runtime authority wiring
-- M46 — Run-wide execution reconciliation
+- M46 — Run-wide execution reconciliation (PR #63, pending validation)
 
 ## Revision and recovery hardening
 
@@ -157,6 +157,6 @@ M46 adds `RunExecutionReconciliationService`, which enumerates the latest durabl
 
 ## Repository readiness
 
-M00–M46 are implemented with automated CI coverage. Environment-specific live validation remains intentionally deferred until a reachable runtime endpoint and required credentials are available. The next logical work is broader protocol completion, observability, policy enforcement, durable distributed coordination, and integration hardening around worker/tool/QA lifecycles.
+M00–M45 are implemented with automated CI coverage. M46 is the active integration candidate in PR #63 and remains blocked from merge until a fresh CI result is available. The next logical work after M46 is broader protocol completion, observability, policy enforcement, durable distributed coordination, and integration hardening around worker/tool/QA lifecycles.
 
 Environment-specific live validation remains intentionally deferred until a reachable runtime endpoint and required credentials are available.
