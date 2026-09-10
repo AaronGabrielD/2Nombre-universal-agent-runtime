@@ -144,7 +144,7 @@ class RecoveryResumeService:
                     run_id,
                     reason="Recovered execution failed",
                     source="recovery",
-                    feedback=result.detail,
+                    feedback=(result.result.stderr if result.result is not None and result.result.stderr else result.detail),
                 )
                 state = self.sessions.get_context(run_id).state
                 audit_event_id = self._record_audit(
