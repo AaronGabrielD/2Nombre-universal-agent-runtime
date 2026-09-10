@@ -23,6 +23,7 @@ class M40RecoveryResumeTests(unittest.TestCase):
     def test_revision_is_explicitly_reopened_for_architecture(self):
         sessions = SessionManager()
         run = sessions.create_session()
+        sessions.transition(run.run_id, WorkflowState.INTAKE)
         sessions.transition(run.run_id, WorkflowState.ARCHITECTING)
         sessions.transition(run.run_id, WorkflowState.WAITING_ARCHITECT_APPROVAL)
         sessions.transition(run.run_id, WorkflowState.REVISION)
@@ -36,6 +37,7 @@ class M40RecoveryResumeTests(unittest.TestCase):
     def test_action_mismatch_is_rejected_without_state_change(self):
         sessions = SessionManager()
         run = sessions.create_session()
+        sessions.transition(run.run_id, WorkflowState.INTAKE)
         sessions.transition(run.run_id, WorkflowState.ARCHITECTING)
 
         service = RecoveryResumeService(session_manager=sessions)
@@ -49,6 +51,7 @@ class M40RecoveryResumeTests(unittest.TestCase):
     def test_execution_reconciliation_persists_authoritative_success_and_resumes_supervision(self):
         sessions = SessionManager()
         run = sessions.create_session()
+        sessions.transition(run.run_id, WorkflowState.INTAKE)
         sessions.transition(run.run_id, WorkflowState.ARCHITECTING)
         sessions.transition(run.run_id, WorkflowState.WAITING_ARCHITECT_APPROVAL)
         sessions.transition(run.run_id, WorkflowState.EXECUTING)
@@ -100,6 +103,7 @@ class M40RecoveryResumeTests(unittest.TestCase):
     def test_execution_without_idempotency_key_is_rejected(self):
         sessions = SessionManager()
         run = sessions.create_session()
+        sessions.transition(run.run_id, WorkflowState.INTAKE)
         sessions.transition(run.run_id, WorkflowState.ARCHITECTING)
         sessions.transition(run.run_id, WorkflowState.WAITING_ARCHITECT_APPROVAL)
         sessions.transition(run.run_id, WorkflowState.EXECUTING)
