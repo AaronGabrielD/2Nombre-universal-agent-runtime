@@ -97,6 +97,9 @@ class ExecutionReconciliationService:
             )
         if result.execution_id != local.execution_id:
             raise ValueError("backend reconciliation returned an inconsistent execution_id")
+
+        # Authoritative remote evidence becomes durable local evidence immediately.
+        self.sessions.add_execution_result(run_id, result)
         return self._from_result(local, result)
 
     @staticmethod
