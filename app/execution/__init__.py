@@ -1,6 +1,13 @@
-"""Execution gateway, backends, and replay-safety controls (M08/M37/M38/M39)."""
+"""Execution gateway, backends, and replay-safety controls (M08/M37/M38/M39/M41)."""
 
 from .colab import ColabBackendError, ColabExecutionBackend
+from .colab_authority import (
+    AuthoritativeColabHTTPServer,
+    ColabAuthorityError,
+    ColabExecutionEvidenceStore,
+    ColabExecutionReconciler,
+    serve_authoritative_forever,
+)
 from .docker_backend import DockerExecutionBackend
 from .lease import ExecutionLease, ExecutionLeaseError, ExecutionLeaseService
 from .models import ExecutionAuthorization, ExecutionBackendInfo
@@ -8,8 +15,12 @@ from .reconciliation import ExecutionReconciliation, ExecutionReconciliationServ
 from .service import ExecutionBackend, ExecutionGateway, ExecutionGatewayError
 
 __all__ = [
+    "AuthoritativeColabHTTPServer",
+    "ColabAuthorityError",
     "ColabBackendError",
     "ColabExecutionBackend",
+    "ColabExecutionEvidenceStore",
+    "ColabExecutionReconciler",
     "DockerExecutionBackend",
     "ExecutionLease",
     "ExecutionLeaseError",
@@ -23,4 +34,5 @@ __all__ = [
     "ExecutionReconciliationService",
     "ExecutionReconciler",
     "ReconciliationStatus",
+    "serve_authoritative_forever",
 ]
