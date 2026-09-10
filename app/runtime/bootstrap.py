@@ -13,11 +13,18 @@ from app.agents.crewai_adapter import CrewAIWorkerAdapter
 from app.approval.service import HumanApprovalEngine
 from app.architect.service import UniversalArchitect
 from app.core.config import Settings, get_settings
-from app.execution import ColabExecutionBackend, DockerExecutionBackend, ExecutionGateway
+from app.execution import (
+    ColabExecutionBackend,
+    ColabExecutionReconciler,
+    DockerExecutionBackend,
+    ExecutionGateway,
+    ExecutionReconciliationService,
+)
 from app.identity import IdentityService, RunAuthorizationService, SQLiteUserRepository
 from app.intake.service import IntakeService
 from app.llm.gemini import GeminiAdapter
 from app.orchestration.service import IntegratedOrchestrator
+from app.recovery.resume import RecoveryResumeService
 from app.session.manager import SessionManager
 from app.supervisor.service import SupervisorService
 from app.tools.authorization import ToolAuthorizationService
@@ -49,11 +56,27 @@ def build_runtime(settings: Settings | None = None) -> RuntimeApplication:
     approvals = HumanApprovalEngine()
     intake = IntakeService(session_manager=sessions, settings=settings)
     architect = UniversalArchitect(GeminiAdapter(settings), settings=settings)
+
+    reconciliation_service = ExecutionReconciliationService(session_manager=sessions)
+    if settings.execution_gateway_url and settings.execution_gateway_token:
+        reconciliation_service = ExecutionReconciliationService(
+            session_manager=sessions,
+            backend_reconciler=ColabExecutionReconciler(
+                base_url=settings.execution_gateway_url,
+                token=settings.execution_gateway_token,
+            ),
+        )
+
+    recovery_resume = RecoveryResumeService(
+        session_manager=sessions,
+        reconciliation_service=reconciliation_service,
+    )
     coordinator = RuntimeCoordinator(
         session_manager=sessions,
         intake_service=intake,
         architect=architect,
         approval_engine=approvals,
+        recovery_resume_service=recovery_resume,
     )
 
     backends = []
