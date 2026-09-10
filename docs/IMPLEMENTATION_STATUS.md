@@ -1,6 +1,6 @@
 # Implementation status
 
-M00–M38 are implemented in `main` with automated CI coverage. Environment-specific live validation that requires external endpoints or credentials remains intentionally deferred.
+M00–M39 are implemented in `main` with automated CI coverage. Environment-specific live validation that requires external endpoints or credentials remains intentionally deferred.
 
 Current integrated path:
 
@@ -30,7 +30,7 @@ Restart recovery path:
   -> persisted SessionRepository
   -> SessionManager.list_recoverable_sessions()
   -> RecoveryService.inspect()
-  -> explicit recovery checkpoint
+  -> explicit RecoveryResumeService action
   -> no automatic execution/replay
 
 Execution replay protection:
@@ -89,6 +89,7 @@ Execution reconciliation:
 - M37 — Durable execution leases and replay protection
 - M38 — Execution reconciliation from durable evidence
 - M39 — Explicit authoritative backend reconciliation contract
+- M40 — Explicit recovery resume actions
 
 ## Revision and recovery hardening
 
@@ -99,6 +100,8 @@ M37 adds a durable execution lease for every worker task. A deterministic idempo
 M38 adds an execution reconciliation layer that correlates a durable lease with persisted `ExecutionResult` evidence. A task is only locally classified as completed or failed when a matching durable result exists. An active lease without a result becomes `PENDING_BACKEND_CHECK`; the runtime does not silently retry it.
 
 M39 adds an explicit provider-neutral `ExecutionReconciler` contract. `ExecutionReconciliationService.reconcile_backend()` may query a configured backend authority only when called explicitly, rejects inconsistent execution identifiers, persists returned authoritative evidence, and refuses retry when the backend is unavailable or cannot produce a result.
+
+M40 adds `RecoveryResumeService`, which makes post-restart recovery executable only through an explicit `RecoveryAction`. Architecture rebuilds may return `REVISION` to `ARCHITECTING`; supervision can only resume from `SUPERVISING`; execution recovery requires an idempotency key and first reconciles durable evidence before optionally consulting an explicitly configured backend authority. Ambiguous or terminal recovery actions are rejected.
 
 ## Security and deployment boundaries
 
@@ -111,9 +114,10 @@ M39 adds an explicit provider-neutral `ExecutionReconciler` contract. `Execution
 - M37 stores lease metadata and identifiers only; executable code is not persisted by the lease service.
 - M38 performs local evidence reconciliation only.
 - M39 makes remote reconciliation an explicit capability rather than an implicit side effect; no authoritative remote result is accepted without matching the original `execution_id`.
+- M40 does not bypass human gates and never converts uncertain execution evidence into automatic replay.
 
 ## Repository readiness
 
-M00–M38 are implemented with automated CI coverage. M39 is the active development milestone. Remaining work is explicit coordinator resume, concrete authoritative adapters for selected remote backends, richer worker/tool/QA protocols, complete UI/API surfaces, observability, stronger policy enforcement, durable distributed coordination, and broader integration testing.
+M00–M39 are implemented with automated CI coverage. M40 is the active development milestone. Remaining work is concrete authoritative adapters for selected remote backends, richer worker/tool/QA protocols, complete UI/API surfaces, observability, stronger policy enforcement, durable distributed coordination, and broader integration testing.
 
 Environment-specific live validation remains intentionally deferred until a reachable runtime endpoint and required credentials are available.
