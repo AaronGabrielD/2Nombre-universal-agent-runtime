@@ -14,6 +14,7 @@ from app.core.contracts import HumanDecisionType, to_dict
 from app.core.states import WorkflowState
 from app.intake.models import IntakeFile
 from app.identity import RunAccessDeniedError
+from app.recovery.models import RecoveryAction
 from app.runtime import RuntimeCoordinatorError
 from app.runtime.bootstrap import RuntimeApplication, build_runtime
 
@@ -23,6 +24,15 @@ _coordinator = _runtime.coordinator
 _orchestrator = _runtime.orchestrator
 _identity_service = _runtime.identity
 _run_authorization = _runtime.run_authorization
+
+_RECOVERY_LABELS = {
+    RecoveryAction.REBUILD_ARCHITECTURE: "🏗️ Rebuild architecture",
+    RecoveryAction.AWAIT_ARCHITECT_APPROVAL: "⏸️ Architecture approval",
+    RecoveryAction.AWAIT_HUMAN_GATE: "⏸️ Worker gate",
+    RecoveryAction.RESUME_SUPERVISION: "▶️ Resume supervision",
+    RecoveryAction.AWAIT_FINAL_APPROVAL: "⏸️ Final approval",
+    RecoveryAction.RECONCILE_EXECUTION: "🔎 Reconcile execution",
+}
 
 
 @cl.password_auth_callback
@@ -96,6 +106,17 @@ def _actions(
     ]
 
 
+def _recovery_actions(run_id: str, action: RecoveryAction):
+    label = _RECOVERY_LABELS.get(action, action.value)
+    return [
+        cl.Action(
+            name="runtime_recovery_resume",
+            payload={"run_id": run_id, "action": action.value},
+            label=label,
+        )
+    ]
+
+
 async def _show_architecture_gate(checkpoint) -> None:
     await cl.Message(
         content=(
@@ -147,6 +168,59 @@ async def _show_tool_gate(gate_id: str, run_id: str, worker_id: str | None) -> N
     ).send()
 
 
+async def _show_open_recovery_gate(run_id: str) -> bool:
+    gates = _runtime.approvals.list_open_gates(run_id=run_id)
+    if not gates:
+        return False
+    gate = gates[-1]
+    if gate.kind == "ARCHITECTURE":
+        await _show_architecture_gate(
+            type("Checkpoint", (), {"plan": gate.context.get("plan", {}), "run_id": run_id, "gate_id": gate.gate_id})()
+        )
+        return True
+    if gate.kind == "FINAL":
+        await _show_final_gate(gate.gate_id, run_id)
+        return True
+    if gate.kind == "TOOL_RISK":
+        worker_id = str(gate.context.get("worker_id") or gate.context.get("worker") or "") or None
+        await _show_tool_gate(gate.gate_id, run_id, worker_id)
+        return True
+    await cl.Message(
+        content=f"Existe una aprobación pendiente `{gate.kind}` para el run `{run_id}`.",
+        author="Runtime",
+    ).send()
+    return True
+
+
+async def _show_recoverable_runs() -> None:
+    identity = _identity()
+    visible = []
+    for record in _coordinator.sessions.list_recoverable_sessions():
+        try:
+            _run_authorization.require_access(identity, record.context)
+        except RunAccessDeniedError:
+            continue
+        try:
+            checkpoint = _coordinator.inspect_recovery(record.context.run_id)
+        except RuntimeCoordinatorError:
+            continue
+        visible.append((record, checkpoint))
+
+    if not visible:
+        return
+
+    lines = ["## Runs recuperables", "", "Hay ejecuciones persistidas que requieren una acción explícita:", ""]
+    actions = []
+    for record, checkpoint in visible[:10]:
+        lines.append(
+            f"- `{record.context.run_id}` — `{record.context.state.value}` → `{checkpoint.action.value}`"
+        )
+        if checkpoint.action != RecoveryAction.TERMINAL:
+            actions.extend(_recovery_actions(record.context.run_id, checkpoint.action))
+    if actions:
+        await cl.Message(content="\n".join(lines), author="Recovery", actions=actions).send()
+
+
 async def _run_orchestration(run_id: str) -> None:
     try:
         result = await cl.make_async(_orchestrator.execute_run)(run_id)
@@ -189,6 +263,10 @@ async def on_chat_start() -> None:
         ),
         author="Runtime",
     ).send()
+    try:
+        await _show_recoverable_runs()
+    except (RuntimeCoordinatorError, ValueError) as exc:
+        await cl.Message(content=f"No se pudo consultar recuperación: `{exc}`", author="Recovery").send()
 
 
 @cl.on_message
@@ -265,6 +343,81 @@ async def on_message(message: cl.Message) -> None:
         content=f"El run activo es `{run_id}` y está en `{context.state.value}`.",
         author="Runtime",
     ).send()
+
+
+@cl.action_callback("runtime_recovery_resume")
+async def on_runtime_recovery_resume(action: cl.Action) -> None:
+    payload = action.payload or {}
+    run_id = str(payload.get("run_id") or "")
+    action_value = str(payload.get("action") or "")
+    if not run_id or not action_value:
+        await cl.Message(content="Acción de recuperación inválida.", author="Recovery").send()
+        return
+    try:
+        _require_run_access(run_id)
+        recovery_action = RecoveryAction(action_value)
+        checkpoint = _coordinator.inspect_recovery(run_id)
+        if checkpoint.action != recovery_action:
+            raise RuntimeCoordinatorError(
+                f"la acción disponible cambió a {checkpoint.action.value}"
+            )
+
+        idempotency_key = None
+        if recovery_action == RecoveryAction.RECONCILE_EXECUTION:
+            response = await cl.AskUserMessage(
+                content=(
+                    "Este run quedó en ejecución cuando el proceso se detuvo. "
+                    "Introduce el idempotency key de la ejecución original; no se permite inventar uno."
+                ),
+                timeout=300,
+            ).send()
+            idempotency_key = str((response or {}).get("output") or "").strip()
+            if not idempotency_key:
+                raise RuntimeCoordinatorError("idempotency_key is required for execution reconciliation")
+
+        result = await cl.make_async(_coordinator.resume_recovery)(
+            run_id=run_id,
+            action=recovery_action,
+            idempotency_key=idempotency_key,
+        )
+        cl.user_session.set("run_id", run_id)
+
+        if result.reconciliation is not None:
+            await cl.Message(
+                content=(
+                    f"Reconciliación `{result.reconciliation.status.value}` para `"
+                    f"{result.reconciliation.execution_id}`. Estado: `{result.resulting_state.value}`."
+                ),
+                author="Recovery",
+            ).send()
+
+        if result.resulting_state == WorkflowState.ARCHITECTING:
+            checkpoint = await cl.make_async(_coordinator.build_architecture)(
+                run_id,
+                context={"recovery": recovery_action.value},
+            )
+            await _show_architecture_gate(checkpoint)
+            return
+
+        if result.resulting_state in {
+            WorkflowState.WAITING_ARCHITECT_APPROVAL,
+            WorkflowState.WORKER_WAITING_HUMAN,
+            WorkflowState.WAITING_FINAL_APPROVAL,
+        }:
+            shown = await _show_open_recovery_gate(run_id)
+            if not shown:
+                await cl.Message(
+                    content=f"El run `{run_id}` conserva su estado `{result.resulting_state.value}` y espera intervención humana.",
+                    author="Recovery",
+                ).send()
+            return
+
+        await cl.Message(
+            content=f"Recuperación aplicada al run `{run_id}`. Estado: `{result.resulting_state.value}`.",
+            author="Recovery",
+        ).send()
+    except (ValueError, RuntimeCoordinatorError, RunAccessDeniedError) as exc:
+        await cl.Message(content=f"Recuperación rechazada: `{exc}`", author="Recovery").send()
 
 
 @cl.action_callback("runtime_gate_decision")
