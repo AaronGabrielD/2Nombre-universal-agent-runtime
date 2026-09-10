@@ -43,9 +43,12 @@ Execution replay protection:
 
 Execution reconciliation:
   -> ExecutionReconciliationService
+  -> RunExecutionReconciliationService (M46)
+  -> latest durable lease for every task
   -> local durable evidence inspection
   -> explicit backend authority when configured
   -> authoritative result persisted locally
+  -> deterministic ordering
   -> no implicit remote calls or retry
 
 Runtime persistence:
@@ -108,7 +111,7 @@ Chainlit recovery surface:
 - M43 — Colab authoritative reconciliation client
 - M44 — Explicit durable runtime session persistence selection
 - M45 — Authenticated Chainlit recovery surface and runtime authority wiring
-- M46 — Recovery state-machine integrity hardening
+- M46 — Recovery state-machine integrity hardening + run-wide execution reconciliation
 
 ## Revision and recovery hardening
 
@@ -134,6 +137,8 @@ M45 adds an authenticated Chainlit recovery surface that discovers recoverable s
 
 M46 restores the legal failed-execution recovery route in `RecoveryResumeService`. An authoritative execution failure now follows `EXECUTING → SUPERVISING → REVISION → ARCHITECTING` through `RevisionService`, preserving the state-machine invariant and durable revision evidence. The accepted recovery audit also records the resulting revision identifier.
 
+M46 also adds `RunExecutionReconciliationService`, which enumerates the latest durable execution lease for every task in a run, produces deterministic ordering, inspects local evidence without contacting a backend, and explicitly reconciles unresolved leases only through `reconcile_backend()`. Existing local evidence remains authoritative; missing backend authority never authorizes retry or fresh execution.
+
 ## Security and deployment boundaries
 
 - M27 provides container-level defense in depth when Docker is available; it is not a high-assurance VM boundary.
@@ -151,10 +156,10 @@ M46 restores the legal failed-execution recovery route in `RecoveryResumeService
 - M43 treats the Colab authority as read-only during reconciliation; no request is allowed to trigger fresh code execution.
 - M44 makes durable session storage an explicit runtime configuration decision rather than an accidental side effect of the process lifecycle.
 - M45 does not grant the Chainlit UI direct execution authority; recovery actions are authenticated, ownership-checked, and delegated to the runtime coordinator.
-- M46 preserves the existing workflow transition graph and routes failed execution recovery through the established revision boundary.
+- M46 preserves the existing workflow transition graph and routes failed execution recovery through the established revision boundary; batch reconciliation never submits execution or authorizes retry.
 
 ## Repository readiness
 
-M00–M45 are implemented in `main`; M46 is the active development milestone. Remaining work is richer worker/tool/QA protocols, complete UI/API surfaces, observability, stronger policy enforcement, durable distributed coordination, and broader integration testing.
+M00–M46 are implemented on the current integration path; the run-wide reconciliation work is the remaining M46 candidate pending fresh CI validation on its updated branch. Remaining work is richer worker/tool/QA protocols, complete UI/API surfaces, observability, stronger policy enforcement, durable distributed coordination, and broader integration testing.
 
 Environment-specific live validation remains intentionally deferred until a reachable runtime endpoint and required credentials are available.
