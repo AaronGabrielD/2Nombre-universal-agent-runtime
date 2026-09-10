@@ -12,9 +12,10 @@ from copy import deepcopy
 from threading import RLock
 from typing import Protocol
 
-from app.core.exceptions import RuntimeErrorBase
+from app.core.contracts import ArtifactRef, ExecutionResult, FinalResult, HumanDecision
+from app.core.exceptions import ContractValidationError, RuntimeErrorBase
 
-from .models import SessionRecord
+from .models import SessionMessage, SessionRecord, WorkerOutput
 
 
 class SessionNotFoundError(RuntimeErrorBase):
@@ -32,6 +33,96 @@ class SessionRepository(Protocol):
     def delete(self, run_id: str) -> None: ...
     def contains(self, run_id: str) -> bool: ...
     def list(self) -> tuple[SessionRecord, ...]: ...
+
+
+def validate_session_record_integrity(record: SessionRecord) -> SessionRecord:
+    """Validate persisted session structure before exposing it to the runtime."""
+    if not isinstance(record, SessionRecord):
+        raise SessionRepositoryError("stored session has an invalid record type")
+
+    run_id = record.context.run_id
+    if not isinstance(run_id, str) or not run_id.strip():
+        raise SessionRepositoryError("stored session has an invalid run_id")
+
+    if not isinstance(record.messages, list):
+        raise SessionRepositoryError(f"stored session {run_id} has invalid messages")
+    for message in record.messages:
+        if not isinstance(message, SessionMessage):
+            raise SessionRepositoryError(f"stored session {run_id} has an invalid message record")
+        if message.run_id != run_id:
+            raise SessionRepositoryError(f"stored session {run_id} contains a cross-run message")
+        if not isinstance(message.role, str) or not message.role.strip():
+            raise SessionRepositoryError(f"stored session {run_id} contains an invalid message role")
+        if not isinstance(message.content, str) or not message.content.strip():
+            raise SessionRepositoryError(f"stored session {run_id} contains invalid message content")
+        if not isinstance(message.timestamp, str) or not message.timestamp.strip():
+            raise SessionRepositoryError(f"stored session {run_id} contains an invalid message timestamp")
+        if not isinstance(message.metadata, dict):
+            raise SessionRepositoryError(f"stored session {run_id} contains invalid message metadata")
+
+    if not isinstance(record.artifacts, list):
+        raise SessionRepositoryError(f"stored session {run_id} has invalid artifacts")
+    for artifact in record.artifacts:
+        if not isinstance(artifact, ArtifactRef):
+            raise SessionRepositoryError(f"stored session {run_id} has an invalid artifact record")
+        try:
+            artifact.validate()
+        except ContractValidationError as exc:
+            raise SessionRepositoryError(f"stored session {run_id} contains an invalid artifact") from exc
+
+    if not isinstance(record.decisions, list):
+        raise SessionRepositoryError(f"stored session {run_id} has invalid decisions")
+    for decision in record.decisions:
+        if not isinstance(decision, HumanDecision):
+            raise SessionRepositoryError(f"stored session {run_id} has an invalid decision record")
+        if decision.run_id != run_id:
+            raise SessionRepositoryError(f"stored session {run_id} contains a cross-run human decision")
+        try:
+            decision.validate()
+        except ContractValidationError as exc:
+            raise SessionRepositoryError(f"stored session {run_id} contains an invalid human decision") from exc
+
+    if not isinstance(record.execution_results, list):
+        raise SessionRepositoryError(f"stored session {run_id} has invalid execution results")
+    for result in record.execution_results:
+        if not isinstance(result, ExecutionResult):
+            raise SessionRepositoryError(f"stored session {run_id} has an invalid execution result")
+        try:
+            result.validate()
+        except ContractValidationError as exc:
+            raise SessionRepositoryError(f"stored session {run_id} contains an invalid execution result") from exc
+
+    if not isinstance(record.worker_outputs, dict):
+        raise SessionRepositoryError(f"stored session {run_id} has invalid worker outputs")
+    for worker_id, output in record.worker_outputs.items():
+        if not isinstance(worker_id, str) or not worker_id.strip():
+            raise SessionRepositoryError(f"stored session {run_id} contains an invalid worker identifier")
+        if not isinstance(output, WorkerOutput) or output.worker_id != worker_id:
+            raise SessionRepositoryError(f"stored session {run_id} contains an invalid worker output")
+        if output.run_id != run_id:
+            raise SessionRepositoryError(f"stored session {run_id} contains a cross-run worker output")
+        if not isinstance(output.status, str) or not output.status.strip():
+            raise SessionRepositoryError(f"stored session {run_id} contains an invalid worker output status")
+        if not isinstance(output.timestamp, str) or not output.timestamp.strip():
+            raise SessionRepositoryError(f"stored session {run_id} contains an invalid worker output timestamp")
+
+    if record.architecture_plan is not None:
+        try:
+            record.architecture_plan.validate()
+        except ContractValidationError as exc:
+            raise SessionRepositoryError(f"stored session {run_id} contains an invalid architecture plan") from exc
+
+    if record.final_result is not None:
+        if not isinstance(record.final_result, FinalResult):
+            raise SessionRepositoryError(f"stored session {run_id} contains an invalid final result")
+        if record.final_result.run_id != run_id:
+            raise SessionRepositoryError(f"stored session {run_id} contains a cross-run final result")
+        try:
+            record.final_result.validate()
+        except ContractValidationError as exc:
+            raise SessionRepositoryError(f"stored session {run_id} contains an invalid final result") from exc
+
+    return record
 
 
 class InMemorySessionRepository:
@@ -202,4 +293,7 @@ class SQLiteSessionRepository:
             raise SessionRepositoryError(f"stored session {run_id} is corrupt") from exc
         if not isinstance(record, SessionRecord):
             raise SessionRepositoryError(f"stored session {run_id} has an invalid record type")
-        return record
+        try:
+            return validate_session_record_integrity(record)
+        except SessionRepositoryError as exc:
+            raise SessionRepositoryError(f"stored session {run_id} failed integrity validation") from exc
