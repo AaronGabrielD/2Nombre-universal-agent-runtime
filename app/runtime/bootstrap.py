@@ -53,7 +53,7 @@ def build_runtime(settings: Settings | None = None) -> RuntimeApplication:
     settings = settings or get_settings()
 
     sessions = SessionManager(repository=build_session_repository())
-    approvals = HumanApprovalEngine()
+    approvals = HumanApprovalEngine(session_manager=sessions)
     intake = IntakeService(session_manager=sessions, settings=settings)
     architect = UniversalArchitect(GeminiAdapter(settings), settings=settings)
 
