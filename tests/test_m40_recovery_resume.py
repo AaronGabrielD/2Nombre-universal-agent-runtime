@@ -6,6 +6,7 @@ from app.execution.lease import ExecutionLeaseService
 from app.execution.reconciliation import ExecutionReconciler, ExecutionReconciliationService, ReconciliationStatus
 from app.recovery.models import RecoveryAction
 from app.recovery.resume import RecoveryResumeError, RecoveryResumeService
+from app.revision.service import RevisionService
 from app.session.manager import SessionManager
 
 
@@ -26,7 +27,14 @@ class M40RecoveryResumeTests(unittest.TestCase):
         sessions.transition(run.run_id, WorkflowState.INTAKE)
         sessions.transition(run.run_id, WorkflowState.ARCHITECTING)
         sessions.transition(run.run_id, WorkflowState.WAITING_ARCHITECT_APPROVAL)
-        sessions.transition(run.run_id, WorkflowState.REVISION)
+        sessions.transition(run.run_id, WorkflowState.EXECUTING)
+        sessions.transition(run.run_id, WorkflowState.SUPERVISING)
+        RevisionService(session_manager=sessions).request_revision(
+            run.run_id,
+            reason="recoverable QA revision",
+            source="test",
+            feedback="rebuild architecture",
+        )
 
         result = RecoveryResumeService(session_manager=sessions).resume(
             run_id=run.run_id,
