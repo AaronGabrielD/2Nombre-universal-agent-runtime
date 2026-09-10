@@ -13,7 +13,7 @@ from app.core.models import RunContext
 from app.core.states import WorkflowState
 
 from .models import SessionMessage, SessionRecord, WorkerOutput
-from .repository import SessionNotFoundError, SessionRepositoryError
+from .repository import SessionNotFoundError, SessionRepositoryError, validate_session_record_integrity
 
 
 class JsonFileSessionRepository:
@@ -43,7 +43,7 @@ class JsonFileSessionRepository:
                 raise SessionNotFoundError(f"Unknown run_id: {run_id}")
             try:
                 payload = json.loads(path.read_text(encoding="utf-8"))
-                return self._from_dict(payload)
+                return self._from_dict(payload, expected_run_id=run_id)
             except SessionNotFoundError:
                 raise
             except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
@@ -76,7 +76,7 @@ class JsonFileSessionRepository:
             for path in sorted(self.root.glob("*.json")):
                 try:
                     payload = json.loads(path.read_text(encoding="utf-8"))
-                    records.append(self._from_dict(payload))
+                    records.append(self._from_dict(payload, expected_run_id=path.stem))
                 except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError, SessionRepositoryError) as exc:
                     raise SessionRepositoryError(f"stored session {path.stem} is corrupt") from exc
             return tuple(records)
@@ -87,6 +87,7 @@ class JsonFileSessionRepository:
         return self.root / f"{run_id}.json"
 
     def _write(self, path: Path, record: SessionRecord) -> None:
+        validate_session_record_integrity(record)
         payload = {"schema_version": self.SCHEMA_VERSION, "record": _json_safe(to_dict(record))}
         temp = path.with_suffix(path.suffix + ".tmp")
         try:
@@ -100,11 +101,15 @@ class JsonFileSessionRepository:
             raise SessionRepositoryError(f"failed to persist session {record.context.run_id}: {exc}") from exc
 
     @classmethod
-    def _from_dict(cls, payload: dict[str, Any]) -> SessionRecord:
-        if payload.get("schema_version") != cls.SCHEMA_VERSION:
-            raise SessionRepositoryError("unsupported session JSON schema version")
+    def _from_dict(cls, payload: dict[str, Any], *, expected_run_id: str | None = None) -> SessionRecord:
+        if not isinstance(payload, dict) or payload.get("schema_version") != cls.SCHEMA_VERSION:
+            raise SessionRepositoryError("unsupported or invalid session JSON schema")
         raw = payload["record"]
+        if not isinstance(raw, dict):
+            raise SessionRepositoryError("stored session record must be an object")
         context_raw = raw["context"]
+        if not isinstance(context_raw, dict):
+            raise SessionRepositoryError("stored session context must be an object")
         context = RunContext(
             run_id=context_raw["run_id"],
             state=WorkflowState(context_raw["state"]),
@@ -112,7 +117,10 @@ class JsonFileSessionRepository:
             updated_at=datetime.fromisoformat(context_raw["updated_at"]),
             metadata=dict(context_raw.get("metadata", {})),
         )
-        return SessionRecord(
+        if expected_run_id is not None and context.run_id != expected_run_id:
+            raise SessionRepositoryError("stored session run_id does not match its storage key")
+
+        record = SessionRecord(
             context=context,
             messages=[SessionMessage(**item) for item in raw.get("messages", [])],
             artifacts=[ArtifactRef(**item) for item in raw.get("artifacts", [])],
@@ -129,6 +137,7 @@ class JsonFileSessionRepository:
             architecture_plan=_plan_from_dict(raw["architecture_plan"]) if raw.get("architecture_plan") else None,
             final_result=_final_result_from_dict(raw["final_result"]) if raw.get("final_result") else None,
         )
+        return validate_session_record_integrity(record)
 
 
 def _json_safe(value: Any) -> Any:
