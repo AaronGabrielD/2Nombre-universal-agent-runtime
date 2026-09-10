@@ -8,14 +8,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from app.approval.service import HumanApprovalEngine
 from app.approval.models import GateStatus
+from app.approval.service import HumanApprovalEngine
 from app.architect.models import ArchitectureInput
 from app.architect.service import UniversalArchitect
 from app.core.contracts import ArchitecturePlan, FinalResult, HumanDecision, HumanDecisionType, to_dict
 from app.core.states import WorkflowState
 from app.intake.models import IntakeFile, IntakeResult
 from app.intake.service import IntakeService
+from app.recovery.models import RecoveryAction, RecoveryCheckpoint
+from app.recovery.resume import RecoveryResumeError, RecoveryResumeResult, RecoveryResumeService
 from app.revision.service import RevisionService
 from app.session.manager import SessionManager
 from app.supervisor.models import QAResult, QAStatus
@@ -45,12 +47,16 @@ class RuntimeCoordinator:
         architect: UniversalArchitect | None = None,
         approval_engine: HumanApprovalEngine | None = None,
         revision_service: RevisionService | None = None,
+        recovery_resume_service: RecoveryResumeService | None = None,
     ) -> None:
         self.sessions = session_manager or SessionManager()
         self.intake = intake_service or IntakeService(session_manager=self.sessions)
         self.architect = architect
         self.approvals = approval_engine or HumanApprovalEngine()
         self.revisions = revision_service or RevisionService(session_manager=self.sessions)
+        self.recovery_resume = recovery_resume_service or RecoveryResumeService(
+            session_manager=self.sessions
+        )
 
     def start_run(
         self,
@@ -239,6 +245,30 @@ class RuntimeCoordinator:
     def list_revisions(self, run_id: str):
         """Return the durable revision history for a run."""
         return self.revisions.list_revisions(run_id)
+
+    def inspect_recovery(self, run_id: str) -> RecoveryCheckpoint:
+        """Return the durable recovery checkpoint for one run."""
+        try:
+            return self.recovery_resume.inspect(run_id)
+        except RecoveryResumeError as exc:
+            raise RuntimeCoordinatorError(str(exc)) from exc
+
+    def resume_recovery(
+        self,
+        *,
+        run_id: str,
+        action: RecoveryAction,
+        idempotency_key: str | None = None,
+    ) -> RecoveryResumeResult:
+        """Apply one explicitly requested recovery action through the canonical service."""
+        try:
+            return self.recovery_resume.resume(
+                run_id=run_id,
+                action=action,
+                idempotency_key=idempotency_key,
+            )
+        except RecoveryResumeError as exc:
+            raise RuntimeCoordinatorError(str(exc)) from exc
 
     def _validate_recorded_decision(self, decision: HumanDecision) -> None:
         """Ensure a decision is exactly the immutable record produced by the gate engine."""
