@@ -1,6 +1,6 @@
 # Implementation status
 
-M00–M42 are implemented in `main` with automated CI coverage. Environment-specific live validation that requires external endpoints or credentials remains intentionally deferred.
+M00–M43 are implemented in `main` with automated CI coverage. Environment-specific live validation that requires external endpoints or credentials remains intentionally deferred.
 
 Current integrated path:
 
@@ -47,6 +47,11 @@ Execution reconciliation:
   -> explicit backend authority when configured
   -> authoritative result persisted locally
   -> no implicit remote calls or retry
+
+Runtime persistence:
+  -> explicit SessionRepository selection
+  -> memory | JSON | SQLite
+  -> RuntimeComposition uses selected repository
 ```
 
 ## Milestones
@@ -95,6 +100,7 @@ Execution reconciliation:
 - M41 — Durable recovery action audit trail
 - M42 — RuntimeCoordinator recovery facade
 - M43 — Colab authoritative reconciliation client
+- M44 — Explicit durable runtime session persistence selection
 
 ## Revision and recovery hardening
 
@@ -112,7 +118,9 @@ M41 adds a durable audit event to every accepted explicit recovery action. The e
 
 M42 exposes recovery inspection and explicit resume through `RuntimeCoordinator`, keeping restart recovery behind the application's canonical coordination boundary. Callers no longer need to construct recovery services directly, while the underlying action validation, reconciliation, audit trail, and fail-closed behavior remain unchanged.
 
-M43 adds `ColabExecutionReconciler`, a concrete HTTP implementation of the provider-neutral `ExecutionReconciler`. It authenticates to a protected execution-authority endpoint, queries by exact `execution_id`, sends the recovery `idempotency_key` as a correlation header, treats HTTP 404 as absence of authoritative evidence, validates the complete `ExecutionResult` payload, and rejects inconsistent execution identifiers or malformed evidence. The client never executes code and is only invoked by an explicit reconciliation operation.
+M43 adds `ColabExecutionReconciler`, a concrete HTTP implementation of the provider-neutral `ExecutionReconciler`. It authenticates to a protected execution-authority endpoint, queries by exact `execution_id`, sends the recovery `idempotency_key` as correlation metadata, treats HTTP 404 as absence of authoritative evidence, validates the complete `ExecutionResult` payload, and never executes code.
+
+M44 adds explicit persistence selection to the runtime composition root. The application can use process-local memory for development compatibility, durable JSON for portable file-based deployments, or trusted SQLite storage. The persistence choice is configuration-driven through `UAR_SESSION_REPOSITORY` and `UAR_SESSION_REPOSITORY_PATH`; the bootstrap layer injects the selected repository into `SessionManager` instead of silently creating an in-memory store.
 
 ## Security and deployment boundaries
 
@@ -129,9 +137,10 @@ M43 adds `ColabExecutionReconciler`, a concrete HTTP implementation of the provi
 - M41 persists only recovery metadata; it does not persist executable code, credentials, or idempotency keys.
 - M42 adds no new execution authority; it only centralizes access to already-controlled recovery operations.
 - M43 treats the Colab authority as read-only during reconciliation; no request is allowed to trigger fresh code execution.
+- M44 makes durable session storage an explicit runtime configuration decision rather than an accidental side effect of the process lifecycle.
 
 ## Repository readiness
 
-M00–M42 are implemented with automated CI coverage. M43 is the active development milestone. Remaining work is the authoritative execution record endpoint on the remote Colab service, richer worker/tool/QA protocols, complete UI/API surfaces, observability, stronger policy enforcement, durable distributed coordination, and broader integration testing.
+M00–M43 are implemented with automated CI coverage. M44 is the active development milestone. Remaining work is richer worker/tool/QA protocols, complete UI/API surfaces, observability, stronger policy enforcement, durable distributed coordination, and broader integration testing.
 
 Environment-specific live validation remains intentionally deferred until a reachable runtime endpoint and required credentials are available.
