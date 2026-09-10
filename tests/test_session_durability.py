@@ -1,3 +1,4 @@
+import json
 import sqlite3
 import tempfile
 import unittest
@@ -42,8 +43,7 @@ class SessionDurabilityTests(unittest.TestCase):
 
     def test_json_survives_manager_restart_with_full_session_payload(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            repository = JsonFileSessionRepository(temp_dir)
-            first_manager = SessionManager(repository)
+            first_manager = SessionManager(JsonFileSessionRepository(temp_dir))
             context = self._populate_session(first_manager)
 
             second_manager = SessionManager(JsonFileSessionRepository(temp_dir))
@@ -93,7 +93,38 @@ class SessionDurabilityTests(unittest.TestCase):
             )
             repository = JsonFileSessionRepository(temp_dir)
 
-            with self.assertRaises((SessionRepositoryError, ValueError)):
+            with self.assertRaises(SessionRepositoryError):
+                repository.get("run-1")
+
+    def test_json_rejects_cross_run_nested_records(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "run-1.json"
+            payload = {
+                "schema_version": 1,
+                "record": {
+                    "context": {
+                        "run_id": "run-1",
+                        "state": "IDLE",
+                        "created_at": "2026-09-10T00:00:00+00:00",
+                        "updated_at": "2026-09-10T00:00:00+00:00",
+                        "metadata": {},
+                    },
+                    "messages": [
+                        {
+                            "message_id": "message-1",
+                            "run_id": "run-2",
+                            "role": "user",
+                            "content": "cross-run",
+                            "timestamp": "2026-09-10T00:00:00+00:00",
+                            "metadata": {},
+                        }
+                    ],
+                },
+            }
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            repository = JsonFileSessionRepository(temp_dir)
+
+            with self.assertRaises(SessionRepositoryError):
                 repository.get("run-1")
 
     def test_json_rejects_unsafe_run_id(self):
@@ -106,22 +137,24 @@ class SessionDurabilityTests(unittest.TestCase):
     def test_sqlite_rejects_corrupt_payload_fail_closed(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             database_path = str(Path(temp_dir) / "sessions.db")
-            repository = SQLiteSessionRepository(database_path)
+            SQLiteSessionRepository(database_path)
             with sqlite3.connect(database_path) as connection:
                 connection.execute(
                     "INSERT INTO sessions(run_id, payload) VALUES (?, ?)",
                     ("corrupt-run", sqlite3.Binary(b"not-a-pickle")),
                 )
 
+            repository = SQLiteSessionRepository(database_path)
             with self.assertRaises(SessionRepositoryError):
                 repository.get("corrupt-run")
 
     def test_missing_session_operations_fail_with_typed_error(self):
-        repository = JsonFileSessionRepository(tempfile.mkdtemp())
-        with self.assertRaises(SessionNotFoundError):
-            repository.get("missing")
-        with self.assertRaises(SessionNotFoundError):
-            repository.delete("missing")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repository = JsonFileSessionRepository(temp_dir)
+            with self.assertRaises(SessionNotFoundError):
+                repository.get("missing")
+            with self.assertRaises(SessionNotFoundError):
+                repository.delete("missing")
 
     def test_manager_serializes_concurrent_session_updates(self):
         manager = SessionManager()
