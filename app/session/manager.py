@@ -5,7 +5,8 @@ from copy import deepcopy
 from threading import RLock
 from typing import Any
 
-from app.core.contracts import ArchitecturePlan, ArtifactRef, ExecutionResult, FinalResult, HumanDecision, to_dict
+from app.approval.models import ApprovalGate, GateStatus
+from app.core.contracts import ArchitecturePlan, ArtifactRef, ExecutionResult, FinalResult, HumanDecision
 from app.core.models import EventRecord, RunContext
 from app.core.states import TERMINAL_STATES, WorkflowState
 
@@ -89,6 +90,11 @@ class SessionManager:
             raise ValueError("HumanDecision.run_id must match the target session")
         with self._lock:
             record = self.repository.get(run_id)
+            for existing in record.decisions:
+                if existing == decision:
+                    return
+                if existing.gate_id == decision.gate_id:
+                    raise ValueError(f"decision already exists for gate {decision.gate_id}")
             record.decisions.append(decision)
             self.repository.save(record)
 
@@ -97,6 +103,58 @@ class SessionManager:
             record = self.repository.get(run_id)
             record.execution_results.append(result)
             self.repository.save(record)
+
+    def add_approval_gate(self, run_id: str, gate: ApprovalGate) -> ApprovalGate:
+        """Persist a new run-scoped approval gate before exposing it to the engine."""
+        gate.validate()
+        if gate.run_id != run_id:
+            raise ValueError("ApprovalGate.run_id must match the target session")
+        with self._lock:
+            record = self.repository.get(run_id)
+            if any(existing.gate_id == gate.gate_id for existing in record.approval_gates):
+                raise ValueError(f"gate {gate.gate_id} already exists")
+            record.approval_gates.append(deepcopy(gate))
+            self.repository.save(record)
+        return deepcopy(gate)
+
+    def resolve_approval_gate(self, run_id: str, gate: ApprovalGate, decision: HumanDecision) -> ApprovalGate:
+        """Atomically persist a resolved gate and its decision in one session save."""
+        gate.validate()
+        if gate.run_id != run_id or decision.run_id != run_id or decision.gate_id != gate.gate_id:
+            raise ValueError("approval gate and decision must match the target session")
+        if gate.status != GateStatus.RESOLVED:
+            raise ValueError("resolved approval gate required")
+        decision.validate()
+        with self._lock:
+            record = self.repository.get(run_id)
+            index = next((i for i, existing in enumerate(record.approval_gates) if existing.gate_id == gate.gate_id), None)
+            if index is None:
+                raise ValueError(f"unknown gate: {gate.gate_id}")
+            existing = record.approval_gates[index]
+            if existing.status != GateStatus.OPEN:
+                raise ValueError(f"gate {gate.gate_id} is already {existing.status.value}")
+            if any(existing_decision.gate_id == decision.gate_id for existing_decision in record.decisions):
+                raise ValueError(f"decision already exists for gate {gate.gate_id}")
+            record.approval_gates[index] = deepcopy(gate)
+            record.decisions.append(deepcopy(decision))
+            self.repository.save(record)
+        return deepcopy(gate)
+
+    def cancel_approval_gate(self, run_id: str, gate: ApprovalGate) -> ApprovalGate:
+        """Persist a cancelled gate without creating a human decision."""
+        gate.validate()
+        if gate.run_id != run_id or gate.status != GateStatus.CANCELLED:
+            raise ValueError("cancelled approval gate must match the target session")
+        with self._lock:
+            record = self.repository.get(run_id)
+            index = next((i for i, existing in enumerate(record.approval_gates) if existing.gate_id == gate.gate_id), None)
+            if index is None:
+                raise ValueError(f"unknown gate: {gate.gate_id}")
+            if record.approval_gates[index].status != GateStatus.OPEN:
+                raise ValueError(f"gate {gate.gate_id} is already {record.approval_gates[index].status.value}")
+            record.approval_gates[index] = deepcopy(gate)
+            self.repository.save(record)
+        return deepcopy(gate)
 
     def set_architecture_plan(self, run_id: str, plan: ArchitecturePlan) -> None:
         with self._lock:

@@ -5,12 +5,15 @@ from copy import deepcopy
 from dataclasses import replace
 from datetime import datetime, timezone
 from threading import RLock
-from typing import Any
+from typing import Any, TYPE_CHECKING
 import uuid
 
 from app.core.contracts import HumanDecision, HumanDecisionType
 
 from .models import ApprovalGate, GateStatus
+
+if TYPE_CHECKING:
+    from app.session.manager import SessionManager
 
 
 class ApprovalError(ValueError):
@@ -18,12 +21,56 @@ class ApprovalError(ValueError):
 
 
 class HumanApprovalEngine:
-    """Owns approval-gate lifecycle and immutable decision history."""
+    """Owns approval-gate lifecycle and immutable decision history.
 
-    def __init__(self) -> None:
+    When a ``SessionManager`` is supplied, gates and their decisions are
+    restored from the durable run records before the engine accepts requests.
+    """
+
+    def __init__(self, session_manager: SessionManager | None = None) -> None:
         self._gates: dict[str, ApprovalGate] = {}
         self._decisions: dict[str, tuple[HumanDecision, ...]] = {}
+        self._session_manager = session_manager
         self._lock = RLock()
+        if session_manager is not None:
+            self._hydrate(session_manager)
+
+    def _hydrate(self, session_manager: SessionManager) -> None:
+        try:
+            sessions = session_manager.list_sessions()
+        except Exception as exc:
+            raise ApprovalError("failed to restore durable approval gates") from exc
+
+        for session in sessions:
+            for gate in getattr(session, "approval_gates", []):
+                try:
+                    gate.validate()
+                except (AttributeError, ValueError) as exc:
+                    raise ApprovalError(f"invalid persisted gate: {getattr(gate, 'gate_id', '<unknown>')}") from exc
+                if gate.run_id != session.context.run_id:
+                    raise ApprovalError(f"persisted gate {gate.gate_id} belongs to another run")
+                if gate.gate_id in self._gates:
+                    raise ApprovalError(f"duplicate persisted gate: {gate.gate_id}")
+                history = tuple(
+                    decision
+                    for decision in session.decisions
+                    if decision.gate_id == gate.gate_id
+                )
+                for decision in history:
+                    if decision.run_id != gate.run_id:
+                        raise ApprovalError(f"persisted decision for gate {gate.gate_id} belongs to another run")
+                    try:
+                        decision.validate()
+                    except Exception as exc:
+                        raise ApprovalError(f"invalid persisted decision for gate {gate.gate_id}") from exc
+                if gate.status == GateStatus.OPEN and history:
+                    raise ApprovalError(f"open persisted gate {gate.gate_id} already has a decision")
+                if gate.status == GateStatus.RESOLVED and len(history) != 1:
+                    raise ApprovalError(f"resolved persisted gate {gate.gate_id} must have exactly one decision")
+                if gate.status == GateStatus.CANCELLED and history:
+                    raise ApprovalError(f"cancelled persisted gate {gate.gate_id} cannot have a decision")
+                self._gates[gate.gate_id] = _copy_gate(gate)
+                self._decisions[gate.gate_id] = history
 
     def request_gate(
         self,
@@ -52,10 +99,18 @@ class HumanApprovalEngine:
             ),
             created_at=now,
         )
-        gate.validate()
+        try:
+            gate.validate()
+        except ValueError as exc:
+            raise ApprovalError(str(exc)) from exc
         with self._lock:
             if gate.gate_id in self._gates:
                 raise ApprovalError(f"gate {gate.gate_id} already exists")
+            if self._session_manager is not None:
+                try:
+                    self._session_manager.add_approval_gate(run_id, gate)
+                except Exception as exc:
+                    raise ApprovalError(f"failed to persist gate {gate.gate_id}") from exc
             self._gates[gate.gate_id] = gate
             self._decisions[gate.gate_id] = ()
         return _copy_gate(gate)
@@ -127,8 +182,14 @@ class HumanApprovalEngine:
                 timestamp=resolved_at,
                 actor=actor.strip(),
             )
+            resolved_gate = replace(gate, status=GateStatus.RESOLVED, resolved_at=resolved_at)
+            if self._session_manager is not None:
+                try:
+                    self._session_manager.resolve_approval_gate(gate.run_id, resolved_gate, record)
+                except Exception as exc:
+                    raise ApprovalError(f"failed to persist resolution for gate {gate_id}") from exc
             self._decisions[gate_id] = self._decisions[gate_id] + (record,)
-            self._gates[gate_id] = replace(gate, status=GateStatus.RESOLVED, resolved_at=resolved_at)
+            self._gates[gate_id] = resolved_gate
             return record
 
     def cancel_gate(self, gate_id: str) -> ApprovalGate:
@@ -139,6 +200,11 @@ class HumanApprovalEngine:
             if gate.status != GateStatus.OPEN:
                 raise ApprovalError(f"gate {gate_id} is already {gate.status.value}")
             cancelled = replace(gate, status=GateStatus.CANCELLED)
+            if self._session_manager is not None:
+                try:
+                    self._session_manager.cancel_approval_gate(gate.run_id, cancelled)
+                except Exception as exc:
+                    raise ApprovalError(f"failed to persist cancellation for gate {gate_id}") from exc
             self._gates[gate_id] = cancelled
             return _copy_gate(cancelled)
 
