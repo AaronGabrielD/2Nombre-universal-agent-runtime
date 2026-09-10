@@ -25,6 +25,7 @@ from app.tools.service import ToolRegistry
 from app.workers.runtime import WorkerRuntimeAdapter
 from app.workers.service import WorkerDispatcher, WorkerFactory
 
+from .persistence import build_session_repository
 from .service import RuntimeCoordinator
 
 
@@ -44,7 +45,7 @@ def build_runtime(settings: Settings | None = None) -> RuntimeApplication:
     """Build one coherent runtime graph from environment-backed configuration."""
     settings = settings or get_settings()
 
-    sessions = SessionManager()
+    sessions = SessionManager(repository=build_session_repository())
     approvals = HumanApprovalEngine()
     intake = IntakeService(session_manager=sessions, settings=settings)
     architect = UniversalArchitect(GeminiAdapter(settings), settings=settings)
