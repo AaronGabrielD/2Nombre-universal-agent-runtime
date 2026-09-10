@@ -1,6 +1,6 @@
 # Implementation status
 
-M00–M39 are implemented in `main` with automated CI coverage. Environment-specific live validation that requires external endpoints or credentials remains intentionally deferred.
+M00–M40 are implemented in `main` with automated CI coverage. Environment-specific live validation that requires external endpoints or credentials remains intentionally deferred.
 
 Current integrated path:
 
@@ -40,11 +40,12 @@ Execution replay protection:
   -> COMPLETED lease reuses persisted execution result
 
 Execution reconciliation:
-  -> ExecutionReconciliationService
-  -> local durable evidence inspection
+  -> RunExecutionReconciliationService
+  -> all durable leases for a run
+  -> local evidence first
   -> explicit backend authority when configured
   -> authoritative result persisted locally
-  -> no implicit remote calls or retry
+  -> deterministic ordering and no implicit retry
 ```
 
 ## Milestones
@@ -90,6 +91,7 @@ Execution reconciliation:
 - M38 — Execution reconciliation from durable evidence
 - M39 — Explicit authoritative backend reconciliation contract
 - M40 — Explicit recovery resume actions
+- M41 — Run-wide execution reconciliation
 
 ## Revision and recovery hardening
 
@@ -103,6 +105,8 @@ M39 adds an explicit provider-neutral `ExecutionReconciler` contract. `Execution
 
 M40 adds `RecoveryResumeService`, which makes post-restart recovery executable only through an explicit `RecoveryAction`. Architecture rebuilds may return `REVISION` to `ARCHITECTING`; supervision can only resume from `SUPERVISING`; execution recovery requires an idempotency key and first reconciles durable evidence before optionally consulting an explicitly configured backend authority. Ambiguous or terminal recovery actions are rejected.
 
+M41 adds run-wide reconciliation. The runtime can inspect every latest durable lease for a run in deterministic order, separate terminal evidence from pending backend checks, and explicitly reconcile all persisted leases through the configured backend authority. Existing local evidence always wins, so completed work is never queried or replayed again.
+
 ## Security and deployment boundaries
 
 - M27 provides container-level defense in depth when Docker is available; it is not a high-assurance VM boundary.
@@ -115,9 +119,10 @@ M40 adds `RecoveryResumeService`, which makes post-restart recovery executable o
 - M38 performs local evidence reconciliation only.
 - M39 makes remote reconciliation an explicit capability rather than an implicit side effect; no authoritative remote result is accepted without matching the original `execution_id`.
 - M40 does not bypass human gates and never converts uncertain execution evidence into automatic replay.
+- M41 aggregates persisted evidence only; batch reconciliation never invokes execution and never authorizes a retry by itself.
 
 ## Repository readiness
 
-M00–M39 are implemented with automated CI coverage. M40 is the active development milestone. Remaining work is concrete authoritative adapters for selected remote backends, richer worker/tool/QA protocols, complete UI/API surfaces, observability, stronger policy enforcement, durable distributed coordination, and broader integration testing.
+M00–M40 are implemented with automated CI coverage. M41 is the active development milestone. Remaining work is richer worker/tool/QA protocols, complete UI/API surfaces, observability, stronger policy enforcement, durable distributed coordination, backend-specific operational adapters, and broader integration testing.
 
 Environment-specific live validation remains intentionally deferred until a reachable runtime endpoint and required credentials are available.
