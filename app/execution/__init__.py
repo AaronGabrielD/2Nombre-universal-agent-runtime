@@ -3,6 +3,7 @@
 from .colab import ColabBackendError, ColabExecutionBackend
 from .docker_backend import DockerExecutionBackend
 from .models import ExecutionAuthorization, ExecutionBackendInfo
+from .reconciliation import ExecutionReconciliation, ExecutionReconciliationService, ReconciliationStatus
 from .service import ExecutionBackend, ExecutionGateway, ExecutionGatewayError
 
 __all__ = [
@@ -14,4 +15,7 @@ __all__ = [
     "ExecutionBackend",
     "ExecutionGateway",
     "ExecutionGatewayError",
+    "ExecutionReconciliation",
+    "ExecutionReconciliationService",
+    "ReconciliationStatus",
 ]
