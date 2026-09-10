@@ -1,7 +1,7 @@
 """Durable execution leases preventing unsafe replay after restart."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from hashlib import sha256
 from threading import RLock
@@ -40,15 +40,7 @@ class ExecutionLeaseService:
         material = "\x1f".join((run_id, worker_id, task_id, language, code))
         return sha256(material.encode("utf-8")).hexdigest()
 
-    def reserve(
-        self,
-        *,
-        run_id: str,
-        worker_id: str,
-        task_id: str,
-        idempotency_key: str,
-        execution_id: str,
-    ) -> ExecutionLease:
+    def reserve(self, *, run_id: str, worker_id: str, task_id: str, idempotency_key: str, execution_id: str) -> ExecutionLease:
         fields = (run_id, worker_id, task_id, idempotency_key, execution_id)
         if not all(isinstance(value, str) and value.strip() for value in fields):
             raise ExecutionLeaseError("execution lease identifiers cannot be empty")
@@ -57,9 +49,7 @@ class ExecutionLeaseService:
             if existing is not None:
                 if existing.status == "COMPLETED":
                     return existing
-                raise ExecutionLeaseError(
-                    f"execution lease already active for idempotency key {idempotency_key}"
-                )
+                raise ExecutionLeaseError(f"execution lease already active for idempotency key {idempotency_key}")
             lease = ExecutionLease(
                 lease_id=str(uuid4()),
                 run_id=run_id,
@@ -93,9 +83,7 @@ class ExecutionLeaseService:
                 raise ExecutionLeaseError(f"unknown execution lease: {lease_id}")
             if current.status == "COMPLETED":
                 return current
-            completed = ExecutionLease(
-                **{**current.__dict__, "status": "COMPLETED", "timestamp": datetime.now(timezone.utc).isoformat()}
-            )
+            completed = replace(current, status="COMPLETED", timestamp=datetime.now(timezone.utc).isoformat())
             self.sessions.add_message(
                 run_id,
                 role="system",
@@ -122,16 +110,7 @@ class ExecutionLeaseService:
             metadata = message.metadata
             if metadata.get("phase") != self.PHASE or metadata.get("idempotency_key") != idempotency_key:
                 continue
-            return ExecutionLease(
-                lease_id=str(metadata["lease_id"]),
-                run_id=run_id,
-                worker_id=str(metadata["worker_id"]),
-                task_id=str(metadata["task_id"]),
-                idempotency_key=idempotency_key,
-                execution_id=str(metadata["execution_id"]),
-                status=str(metadata["status"]),
-                timestamp=str(metadata["timestamp"]),
-            )
+            return self._from_metadata(run_id, metadata)
         return None
 
     def _find_by_lease(self, run_id: str, lease_id: str) -> ExecutionLease | None:
@@ -139,14 +118,18 @@ class ExecutionLeaseService:
             metadata = message.metadata
             if metadata.get("phase") != self.PHASE or metadata.get("lease_id") != lease_id:
                 continue
-            return ExecutionLease(
-                lease_id=lease_id,
-                run_id=run_id,
-                worker_id=str(metadata["worker_id"]),
-                task_id=str(metadata["task_id"]),
-                idempotency_key=str(metadata["idempotency_key"]),
-                execution_id=str(metadata["execution_id"]),
-                status=str(metadata["status"]),
-                timestamp=str(metadata["timestamp"]),
-            )
+            return self._from_metadata(run_id, metadata)
         return None
+
+    @staticmethod
+    def _from_metadata(run_id: str, metadata: dict[str, object]) -> ExecutionLease:
+        return ExecutionLease(
+            lease_id=str(metadata["lease_id"]),
+            run_id=run_id,
+            worker_id=str(metadata["worker_id"]),
+            task_id=str(metadata["task_id"]),
+            idempotency_key=str(metadata["idempotency_key"]),
+            execution_id=str(metadata["execution_id"]),
+            status=str(metadata["status"]),
+            timestamp=str(metadata["timestamp"]),
+        )
