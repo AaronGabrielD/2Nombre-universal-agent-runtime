@@ -16,9 +16,13 @@ from app.core.contracts import ArchitecturePlan, FinalResult, HumanDecision, Hum
 from app.core.states import WorkflowState
 from app.intake.models import IntakeFile, IntakeResult
 from app.intake.service import IntakeService
+from app.recovery.models import RecoveryAction, RecoveryCheckpoint
+from app.recovery.resume import RecoveryResumeResult
 from app.revision.service import RevisionService
 from app.session.manager import SessionManager
 from app.supervisor.models import QAResult, QAStatus
+
+from .recovery import RuntimeRecoveryFacade
 
 
 class RuntimeCoordinatorError(ValueError):
@@ -51,6 +55,7 @@ class RuntimeCoordinator:
         self.architect = architect
         self.approvals = approval_engine or HumanApprovalEngine()
         self.revisions = revision_service or RevisionService(session_manager=self.sessions)
+        self.recovery = RuntimeRecoveryFacade(session_manager=self.sessions)
 
     def start_run(
         self,
@@ -239,6 +244,31 @@ class RuntimeCoordinator:
     def list_revisions(self, run_id: str):
         """Return the durable revision history for a run."""
         return self.revisions.list_revisions(run_id)
+
+    def inspect_recovery(self, run_id: str) -> RecoveryCheckpoint:
+        """Inspect durable recovery state without changing or executing the run."""
+        return self.recovery.inspect(run_id)
+
+    def list_recovery_checkpoints(self) -> tuple[RecoveryCheckpoint, ...]:
+        """List deterministic recovery checkpoints for all persisted runs."""
+        return self.recovery.list_checkpoints()
+
+    def resume_recovery(
+        self,
+        *,
+        run_id: str,
+        action: RecoveryAction,
+        idempotency_key: str | None = None,
+    ) -> RecoveryResumeResult:
+        """Apply an explicitly requested recovery action; never resume implicitly."""
+        try:
+            return self.recovery.resume(
+                run_id=run_id,
+                action=action,
+                idempotency_key=idempotency_key,
+            )
+        except ValueError as exc:
+            raise RuntimeCoordinatorError(str(exc)) from exc
 
     def _validate_recorded_decision(self, decision: HumanDecision) -> None:
         """Ensure a decision is exactly the immutable record produced by the gate engine."""
