@@ -2,8 +2,9 @@
 
 This is the remote counterpart of ``ColabExecutionBackend``. It deliberately
 uses only the Python standard library. It authenticates requests, executes
-Python without a shell, enforces a timeout, captures bounded output, and exposes
-stored artifacts through a read endpoint.
+Python without a shell, enforces a timeout, captures bounded output, exposes
+stored artifacts through a read endpoint, and exposes persisted execution
+evidence for explicit reconciliation.
 
 Important: a normal Colab VM is not a security sandbox. The static Python policy
 and ``needs_network`` admission check are defense-in-depth controls, not a
@@ -13,6 +14,11 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
+import shutil
+import subprocess
+import sys
+import uuid
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -20,11 +26,6 @@ from tempfile import TemporaryDirectory
 from time import monotonic
 from typing import Any
 from urllib.parse import quote, unquote, urlparse
-import secrets
-import shutil
-import subprocess
-import sys
-import uuid
 
 from app.execution.policy import ExecutionPolicyError, PythonExecutionPolicy
 
@@ -62,7 +63,7 @@ class ExecutionServiceConfig:
 class ColabExecutionRequestHandler(BaseHTTPRequestHandler):
     """Small JSON API for one remote execution backend."""
 
-    server_version = "UniversalAgentRuntime-Colab/1.0"
+    server_version = "UniversalAgentRuntime-Colab/1.1"
 
     @property
     def config(self) -> ExecutionServiceConfig:
@@ -72,6 +73,9 @@ class ColabExecutionRequestHandler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         if path == "/health":
             self._send_json(HTTPStatus.OK, {"status": "ok", "backend": "colab-service"})
+            return
+        if path.startswith("/executions/"):
+            self._serve_execution(path)
             return
         if path.startswith("/artifacts/"):
             self._serve_artifact(path)
@@ -90,6 +94,7 @@ class ColabExecutionRequestHandler(BaseHTTPRequestHandler):
         try:
             payload = self._read_json()
             response = self.server.executor.execute(payload)  # type: ignore[attr-defined]
+            self.server.executor.persist_result(response)  # type: ignore[attr-defined]
         except ColabExecutionServiceError as exc:
             self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
             return
@@ -127,6 +132,24 @@ class ColabExecutionRequestHandler(BaseHTTPRequestHandler):
         if not isinstance(payload, dict):
             raise ColabExecutionServiceError("request JSON must be an object")
         return payload
+
+    def _serve_execution(self, path: str) -> None:
+        if not self._authorized():
+            self._send_json(HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
+            return
+        parts = [unquote(part) for part in path.split("/") if part]
+        if len(parts) != 2 or parts[0] != "executions":
+            self._send_json(HTTPStatus.NOT_FOUND, {"error": "not_found"})
+            return
+        execution_id = parts[1]
+        if not _safe_identifier(execution_id):
+            self._send_json(HTTPStatus.NOT_FOUND, {"error": "not_found"})
+            return
+        result = self.server.executor.get_result(execution_id)  # type: ignore[attr-defined]
+        if result is None:
+            self._send_json(HTTPStatus.NOT_FOUND, {"error": "execution_not_found"})
+            return
+        self._send_json(HTTPStatus.OK, result)
 
     def _serve_artifact(self, path: str) -> None:
         if not self._authorized():
@@ -170,9 +193,13 @@ class ColabExecutionRequestHandler(BaseHTTPRequestHandler):
 class ColabCodeExecutor:
     """Translate validated execution requests into local subprocesses."""
 
+    EVIDENCE_DIR = ".execution-evidence"
+
     def __init__(self, config: ExecutionServiceConfig) -> None:
         self.config = config
         self.policy = PythonExecutionPolicy()
+        self.evidence_root = self.config.artifact_root / self.EVIDENCE_DIR
+        self.evidence_root.mkdir(parents=True, exist_ok=True)
 
     def execute(self, payload: dict[str, Any]) -> dict[str, Any]:
         request = self._validate_request(payload)
@@ -262,6 +289,32 @@ class ColabCodeExecutor:
             duration_ms=_duration_ms(started),
             artifacts=artifacts,
         )
+
+    def persist_result(self, result: dict[str, Any]) -> None:
+        """Persist execution evidence atomically without storing executable code."""
+        execution_id = result.get("execution_id")
+        if not isinstance(execution_id, str) or not _safe_identifier(execution_id):
+            raise ColabExecutionServiceError("execution result has an invalid execution_id")
+        destination = self.evidence_root / f"{execution_id}.json"
+        temporary = destination.with_suffix(".tmp")
+        data = json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        if len(data) > self.config.max_request_bytes:
+            raise ColabExecutionServiceError("execution evidence exceeds configured limit")
+        temporary.write_bytes(data)
+        os.replace(temporary, destination)
+
+    def get_result(self, execution_id: str) -> dict[str, Any] | None:
+        """Return persisted execution evidence for explicit backend reconciliation."""
+        if not _safe_identifier(execution_id):
+            return None
+        path = self.evidence_root / f"{execution_id}.json"
+        if not path.is_file():
+            return None
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            return None
+        return data if isinstance(data, dict) else None
 
     def _validate_request(self, payload: dict[str, Any]) -> dict[str, Any]:
         required = ("execution_id", "run_id", "worker_id", "language", "code")
