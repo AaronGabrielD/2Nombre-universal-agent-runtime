@@ -9,6 +9,7 @@ from app.execution.reconciliation import (
     ExecutionReconciliationService,
     ReconciliationStatus,
 )
+from app.revision.service import RevisionService
 from app.session.manager import SessionManager
 
 from .models import RecoveryAction, RecoveryCheckpoint
@@ -30,15 +31,30 @@ class RecoveryResumeResult:
 class RecoveryResumeService:
     """Apply only explicit, non-ambiguous recovery transitions."""
 
-    def __init__(self, *, session_manager: SessionManager, reconciliation_service: ExecutionReconciliationService | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        session_manager: SessionManager,
+        reconciliation_service: ExecutionReconciliationService | None = None,
+        revision_service: RevisionService | None = None,
+    ) -> None:
         self.sessions = session_manager
         self.recovery = RecoveryService(session_manager=session_manager)
-        self.reconciliation = reconciliation_service or ExecutionReconciliationService(session_manager=session_manager)
+        self.reconciliation = reconciliation_service or ExecutionReconciliationService(
+            session_manager=session_manager
+        )
+        self.revisions = revision_service or RevisionService(session_manager=session_manager)
 
     def inspect(self, run_id: str) -> RecoveryCheckpoint:
         return self.recovery.inspect(run_id)
 
-    def resume(self, *, run_id: str, action: RecoveryAction, idempotency_key: str | None = None) -> RecoveryResumeResult:
+    def resume(
+        self,
+        *,
+        run_id: str,
+        action: RecoveryAction,
+        idempotency_key: str | None = None,
+    ) -> RecoveryResumeResult:
         checkpoint = self.recovery.inspect(run_id)
         if checkpoint.action != action:
             raise RecoveryResumeError(
@@ -66,13 +82,18 @@ class RecoveryResumeService:
 
         if action == RecoveryAction.RESUME_SUPERVISION:
             if state != WorkflowState.SUPERVISING:
-                raise RecoveryResumeError(f"supervision resume requires SUPERVISING, got {state.value}")
+                raise RecoveryResumeError(
+                    f"supervision resume requires SUPERVISING, got {state.value}"
+                )
             return RecoveryResumeResult(run_id, checkpoint, state)
 
         if action == RecoveryAction.RECONCILE_EXECUTION:
             if not idempotency_key:
                 raise RecoveryResumeError("execution reconciliation requires idempotency_key")
-            result = self.reconciliation.inspect(run_id=run_id, idempotency_key=idempotency_key)
+            result = self.reconciliation.inspect(
+                run_id=run_id,
+                idempotency_key=idempotency_key,
+            )
             if result.status == ReconciliationStatus.PENDING_BACKEND_CHECK:
                 result = self.reconciliation.reconcile_backend(
                     run_id=run_id,
@@ -83,9 +104,23 @@ class RecoveryResumeService:
                     state = self.sessions.transition(run_id, WorkflowState.SUPERVISING).state
                 return RecoveryResumeResult(run_id, checkpoint, state, result)
             if result.status == ReconciliationStatus.FAILED:
-                if state == WorkflowState.EXECUTING:
-                    state = self.sessions.transition(run_id, WorkflowState.REVISION).state
-                return RecoveryResumeResult(run_id, checkpoint, state, result)
+                if state != WorkflowState.EXECUTING:
+                    raise RecoveryResumeError(
+                        f"failed execution recovery requires EXECUTING, got {state.value}"
+                    )
+                self.sessions.transition(run_id, WorkflowState.SUPERVISING)
+                self.revisions.request_revision(
+                    run_id,
+                    reason="Recovered execution failed",
+                    source="recovery",
+                    feedback=result.detail,
+                )
+                return RecoveryResumeResult(
+                    run_id,
+                    checkpoint,
+                    WorkflowState.ARCHITECTING,
+                    result,
+                )
             raise RecoveryResumeError(
                 f"execution reconciliation did not establish terminal evidence: {result.status.value}"
             )
