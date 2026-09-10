@@ -2,16 +2,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from app.core.contracts import (
-    ArtifactRef,
-    FinalResult,
-    HumanDecision,
-    HumanDecisionType,
-)
+from app.core.contracts import ArtifactRef, FinalResult, HumanDecision, HumanDecisionType
 from app.core.states import TERMINAL_STATES, WorkflowState
 from app.session.json_repository import JsonFileSessionRepository
 from app.session.manager import SessionManager
-from app.session.repository import SQLiteSessionRepository
+from app.session.repository import InMemorySessionRepository, SessionNotFoundError, SQLiteSessionRepository
 
 
 class SessionRepositoryDurabilityTests(unittest.TestCase):
@@ -50,12 +45,11 @@ class SessionRepositoryDurabilityTests(unittest.TestCase):
         self.assertEqual(second_snapshot.decisions, [])
         self.assertIsNone(second_snapshot.final_result)
 
-        # Returned session records must be isolated copies.
         first_snapshot.context.metadata["owner_id"] = "mutated"
         self.assertEqual(manager.get_context(first.run_id).metadata["owner_id"], "user-a")
 
     def test_in_memory_repository_isolated(self):
-        self.exercise_repository(None and __import__("app.session.repository", fromlist=["InMemorySessionRepository"]).InMemorySessionRepository())
+        self.exercise_repository(InMemorySessionRepository())
 
     def test_sqlite_repository_survives_manager_restart(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -103,9 +97,9 @@ class SessionRepositoryDurabilityTests(unittest.TestCase):
 
     def test_missing_session_operations_fail_closed(self):
         manager = SessionManager()
-        with self.assertRaises(Exception):
+        with self.assertRaises(SessionNotFoundError):
             manager.get_context("missing-run")
-        with self.assertRaises(Exception):
+        with self.assertRaises(SessionNotFoundError):
             manager.add_message("missing-run", role="user", content="x")
 
 
