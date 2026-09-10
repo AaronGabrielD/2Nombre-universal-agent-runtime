@@ -1,0 +1,68 @@
+{
+  "task": "A2_SESSION_PERSISTENCE_HARDENING",
+  "status": "BLOCKED",
+  "repository": "AaronGabrielD/2Nombre-universal-agent-runtime",
+  "baseline": {
+    "branch": "main",
+    "commit": "f748cffff3fdd749d89a3c3ae913b7dfb9d7425e",
+    "commit_message": "test: harden A2 session persistence coverage"
+  },
+  "audit": {
+    "mode": "static_source_audit",
+    "production_files_modified": false,
+    "integration_status": "not_integrated_by_this_task",
+    "runtime_tests_executed": false,
+    "runtime_test_reason": "No local project checkout was available in the execution environment.",
+    "ci_pass_claimed": false,
+    "main_changed_during_audit": true,
+    "final_conclusions_refreshed_against_current_main": true
+  },
+  "findings": {
+    "failure": 5,
+    "verified": 5,
+    "not_verified": 1,
+    "not_applicable": 2
+  },
+  "confirmed_failures": [
+    "SQLite row key and SessionRecord.context.run_id are not bound during decode/list.",
+    "Malformed SQLite SessionRecord context can escape as AttributeError before repository error translation.",
+    "SQLite create/save do not enforce the same integrity validation that JSON writes enforce.",
+    "InMemorySessionRepository create/get/save expose live mutable SessionRecord references.",
+    "JSON nested malformed container shapes such as worker_outputs=[] can still leak AttributeError."
+  ],
+  "verified_controls": [
+    "JSON get/list bind persisted context.run_id to the requested/file-derived run ID.",
+    "JSON read/write uses the current integrity validator.",
+    "SQLite read/decode invokes the current integrity validator after unpickling.",
+    "JSON atomic publication uses temporary file plus os.replace().",
+    "Existing SessionManager concurrency test and workflow/human-gate boundaries remain intact."
+  ],
+  "design_limitations": [
+    "SQLite uses pickle and is trusted application storage only; attacker-controlled database files are outside the stated security model.",
+    "JSON has no documented multi-process transactional guarantee."
+  ],
+  "candidate_tests": {
+    "files": [
+      "delegated_tasks/A2_SESSION_PERSISTENCE_HARDENING/tests/test_a2_current_main_residuals.py",
+      "delegated_tasks/A2_SESSION_PERSISTENCE_HARDENING/tests/test_a2_atomic_write_candidate.py"
+    ],
+    "executed": false
+  },
+  "recommended_production_files": [
+    "app/session/repository.py",
+    "app/session/json_repository.py"
+  ],
+  "no_change_required_in": [
+    "app/runtime/persistence.py",
+    "app/core/states.py",
+    "app/runtime/service.py"
+  ],
+  "non_goals_preserved": [
+    "No new modules or architectures.",
+    "No new workflow states or phases.",
+    "No changes to human-in-the-loop gates.",
+    "No automatic recovery or replay.",
+    "No new providers or services.",
+    "No claim of attacker-safe SQLite/pickle storage."
+  ]
+}
