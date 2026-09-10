@@ -1,6 +1,6 @@
 # Implementation status
 
-M00–M39 are implemented in `main` with automated CI coverage. Environment-specific live validation that requires external endpoints or credentials remains intentionally deferred.
+M00–M40 are implemented in `main` with automated CI coverage. Environment-specific live validation that requires external endpoints or credentials remains intentionally deferred.
 
 Current integrated path:
 
@@ -44,6 +44,7 @@ Execution reconciliation:
   -> local durable evidence inspection
   -> explicit backend authority when configured
   -> authoritative result persisted locally
+  -> Colab backend exposes authenticated persisted evidence lookup
   -> no implicit remote calls or retry
 ```
 
@@ -90,6 +91,7 @@ Execution reconciliation:
 - M38 — Execution reconciliation from durable evidence
 - M39 — Explicit authoritative backend reconciliation contract
 - M40 — Explicit recovery resume actions
+- M41 — Colab authoritative execution evidence lookup
 
 ## Revision and recovery hardening
 
@@ -103,6 +105,8 @@ M39 adds an explicit provider-neutral `ExecutionReconciler` contract. `Execution
 
 M40 adds `RecoveryResumeService`, which makes post-restart recovery executable only through an explicit `RecoveryAction`. Architecture rebuilds may return `REVISION` to `ARCHITECTING`; supervision can only resume from `SUPERVISING`; execution recovery requires an idempotency key and first reconciles durable evidence before optionally consulting an explicitly configured backend authority. Ambiguous or terminal recovery actions are rejected.
 
+M41 gives the Colab execution service an authenticated `/executions/<execution_id>` evidence endpoint backed by atomic JSON evidence records. The service persists execution results after each accepted execution response without storing the executable source code in the evidence record. `ColabExecutionReconciler` consumes that endpoint through the M39 provider-neutral contract.
+
 ## Security and deployment boundaries
 
 - M27 provides container-level defense in depth when Docker is available; it is not a high-assurance VM boundary.
@@ -115,9 +119,10 @@ M40 adds `RecoveryResumeService`, which makes post-restart recovery executable o
 - M38 performs local evidence reconciliation only.
 - M39 makes remote reconciliation an explicit capability rather than an implicit side effect; no authoritative remote result is accepted without matching the original `execution_id`.
 - M40 does not bypass human gates and never converts uncertain execution evidence into automatic replay.
+- M41 exposes only authenticated execution evidence and keeps executable source out of the persisted evidence JSON.
 
 ## Repository readiness
 
-M00–M39 are implemented with automated CI coverage. M40 is the active development milestone. Remaining work is concrete authoritative adapters for selected remote backends, richer worker/tool/QA protocols, complete UI/API surfaces, observability, stronger policy enforcement, durable distributed coordination, and broader integration testing.
+M00–M40 are implemented with automated CI coverage. M41 is the active development milestone. Remaining work is richer worker/tool/QA protocols, complete UI/API surfaces, observability, stronger policy enforcement, durable distributed coordination, and broader integration testing. A reachable live Colab endpoint is still required for environment-specific smoke validation.
 
 Environment-specific live validation remains intentionally deferred until a reachable runtime endpoint and required credentials are available.
