@@ -12,6 +12,7 @@ from uuid import uuid4
 
 from app.core.config import get_settings
 from app.core.contracts import ExecutionRequest, ExecutionResult, TaskSpec
+from app.execution.lease import ExecutionLeaseError, ExecutionLeaseService
 from app.execution.models import ExecutionAuthorization
 from app.execution.service import ExecutionGateway
 from app.session.manager import SessionManager
@@ -71,9 +72,11 @@ class WorkerRuntimeAdapter:
         *,
         gateway: ExecutionGateway,
         session_manager: SessionManager,
+        lease_service: ExecutionLeaseService | None = None,
     ) -> None:
         self.gateway = gateway
         self.sessions = session_manager
+        self.leases = lease_service or ExecutionLeaseService(session_manager=session_manager)
 
     def execute_batch(
         self,
@@ -170,10 +173,40 @@ class WorkerRuntimeAdapter:
             needs_network=item.needs_network,
             environment=dict(item.environment),
         )
+        idempotency_key = self.leases.idempotency_key(
+            run_id=batch.run_id,
+            worker_id=item.task.worker_id,
+            task_id=item.task.task_id,
+            language=item.language,
+            code=item.code,
+        )
+        try:
+            lease = self.leases.reserve(
+                run_id=batch.run_id,
+                worker_id=item.task.worker_id,
+                task_id=item.task.task_id,
+                idempotency_key=idempotency_key,
+                execution_id=execution.execution_id,
+            )
+        except ExecutionLeaseError as exc:
+            raise WorkerRuntimeError(str(exc)) from exc
+
+        if lease.status == "COMPLETED":
+            for result in self.sessions.snapshot(batch.run_id).execution_results:
+                if result.execution_id == lease.execution_id:
+                    return result
+            raise WorkerRuntimeError(
+                f"completed execution lease {lease.lease_id} has no persisted result"
+            )
+
         result = self.gateway.execute(
             execution,
             authorization=authorization,
             backend_id=backend_id,
         )
         self.sessions.add_execution_result(batch.run_id, result)
+        try:
+            self.leases.complete(run_id=batch.run_id, lease_id=lease.lease_id)
+        except ExecutionLeaseError as exc:
+            raise WorkerRuntimeError(str(exc)) from exc
         return result
