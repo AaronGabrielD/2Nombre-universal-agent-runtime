@@ -74,7 +74,9 @@ Estados mínimos:
 
 Transiciones ilegales deben ser rechazadas por el `SessionManager`.
 
-## 5. Módulos
+## 5. Módulos y evolución de la implementación
+
+La numeración de este Blueprint es la nomenclatura original del diseño. Durante la integración, algunas responsabilidades recibieron módulos adicionales y las capas de presentación/hosting se especializaron. La siguiente correspondencia es la referencia canónica para el repositorio actual; no implica mover responsabilidades entre servicios ya implementados.
 
 ### M00 — Foundation & Contracts
 
@@ -181,27 +183,58 @@ Responsabilidad:
 - Solicitar correcciones.
 - Producir `FinalResult`.
 
-### M10 — Preview & UI Presentation
+### M10 — Runtime Coordinator
+
+El diseño original llamaba a esta capa el punto de coordinación principal. En la implementación integrada, M10 es el `RuntimeCoordinator`: conecta los servicios de dominio y mantiene el límite canónico entre orquestación y presentación.
 
 Responsabilidad:
-- Steps de Chainlit.
-- Estado por worker.
-- Elementos de visualización.
-- Preview HTML/CSS/JS.
-- Renderizado seguro en sandbox/iframe.
+- Coordinar intake, arquitectura, aprobación, workers, autorización de herramientas, ejecución y supervisión.
+- Mantener invariantes de `run_id` y ownership.
+- Centralizar el acceso a recuperación mediante las APIs explícitas de M42.
+- No contener lógica específica de UI ni del proveedor de ejecución.
 
-### M11 — Deployment Adapter
+### M11 — Chainlit Presentation
+
+En la implementación integrada, M11 es el adaptador de presentación de Chainlit.
 
 Responsabilidad:
-- Dockerfile.
-- Configuración del puerto.
-- Variables/secrets.
-- Health check.
-- Documentación de despliegue.
+- Recibir mensajes y archivos del usuario.
+- Mostrar el plan y los gates humanos.
+- Presentar progreso de workers y solicitudes de aclaración.
+- Surfacear Gate C y Gate D sin autorizar ejecuciones por sí mismo.
+- Mostrar resultados y exponer recuperación autenticada mediante `RuntimeCoordinator`.
 
-Targets iniciales:
-1. Render Free.
-2. Hugging Face Docker si la cuenta/modalidad lo permite.
+### M12 — Colab Execution Service
+
+M12 implementa el servicio HTTP que ejecuta en el entorno remoto experimental de Google Colab y corresponde al backend Colab usado detrás de M08.
+
+### M13 — Worker Runtime Adapter
+
+M13 adapta tareas de worker al runtime de ejecución y persiste resultados a través de las fronteras establecidas por M08.
+
+### M14 — CrewAI Worker Adapter
+
+M14 encapsula la integración opcional con CrewAI y mantiene la ejecución y la autorización fuera del adapter.
+
+### M15 — Integrated Orchestrator
+
+M15 conecta el flujo completo de workers, ejecución y supervisión respetando las fronteras del coordinator.
+
+### M16–M24 — Authorization, concurrency, execution integration, persistence, auth, policy and CI
+
+Estos hitos consolidan Gate C, concurrencia de sesiones/workers, pruebas HTTP, persistencia, autenticación, política de ejecución y validación continua.
+
+### M25 — Provider-Neutral Deployment Adapter
+
+M25 introduce la frontera de despliegue desacoplada del runtime. El adapter actual renderiza una especificación Docker/Compose y no provisiona infraestructura de terceros automáticamente.
+
+Targets de hosting siguen siendo decisiones operativas externas al runtime.
+
+### M26–M46 — Integración, endurecimiento y recuperación
+
+M26 añade identidad multiusuario. M27 endurece el backend Docker. M28 añade migraciones y JSON durable. M29 añade validación cloud explícita. M30–M31 consolidan composición, UI y contratos. M32–M36 añaden revisión y recuperación después de reinicio. M37–M39 añaden leases, protección contra replay y reconciliación autoritativa. M40–M42 hacen explícita la recuperación y la centralizan en `RuntimeCoordinator`. M43 integra la reconciliación autoritativa de Colab. M44 hace explícita la selección de persistencia. M45 integra recuperación autenticada en Chainlit. M46 endurece la máquina de estados de recuperación y añade reconciliación por ejecución completa.
+
+Para el estado exacto y verificable de cada uno de estos hitos, la fuente de verdad es `docs/IMPLEMENTATION_STATUS.md`.
 
 ## 6. Contratos principales
 
@@ -432,7 +465,7 @@ Render Free:
 
 Hugging Face Docker sólo si el plan/cuenta permite crear y ejecutar el Space; la documentación actual indica que Docker Spaces que ejecutan cómputo requieren plan de pago para cuentas personales.
 
-## 15. Orden de implementación
+## 15. Orden de implementación original
 
 1. M00
 2. M01
@@ -447,6 +480,8 @@ Hugging Face Docker sólo si el plan/cuenta permite crear y ejecutar el Space; l
 11. M02 endurecido
 12. M11
 13. Integración completa
+
+Este orden es histórico: el repositorio actual ya contiene la integración posterior descrita en M12–M46. No usar esta sección como lista de trabajo pendiente.
 
 ## 16. Criterio de finalización del Blueprint
 
