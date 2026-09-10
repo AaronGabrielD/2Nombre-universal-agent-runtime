@@ -90,6 +90,11 @@ class SessionManager:
             raise ValueError("HumanDecision.run_id must match the target session")
         with self._lock:
             record = self.repository.get(run_id)
+            for existing in record.decisions:
+                if existing == decision:
+                    return
+                if existing.gate_id == decision.gate_id:
+                    raise ValueError(f"decision already exists for gate {decision.gate_id}")
             record.decisions.append(decision)
             self.repository.save(record)
 
