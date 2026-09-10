@@ -54,8 +54,12 @@ class SessionRecord:
     architecture_plan: ArchitecturePlan | None = None
     final_result: FinalResult | None = None
 
-    def __setstate__(self, state: dict[str, Any]) -> None:
+    def __setstate__(self, state: object) -> None:
         """Backfill the gate collection when loading pre-gate-persistence pickles."""
+        if isinstance(state, tuple) and len(state) == 2 and isinstance(state[1], dict):
+            state = state[1]
+        if not isinstance(state, dict):
+            raise TypeError("invalid SessionRecord pickle state")
         for field_name, value in state.items():
             object.__setattr__(self, field_name, value)
         if not hasattr(self, "approval_gates"):
