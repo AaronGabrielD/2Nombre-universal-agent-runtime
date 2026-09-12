@@ -45,7 +45,6 @@ class SessionRecord:
     """All mutable state belonging to exactly one run_id."""
 
     context: RunContext
-    revision: int = 0
     messages: list[SessionMessage] = field(default_factory=list)
     artifacts: list[ArtifactRef] = field(default_factory=list)
     decisions: list[HumanDecision] = field(default_factory=list)
@@ -54,6 +53,7 @@ class SessionRecord:
     approval_gates: list[ApprovalGate] = field(default_factory=list)
     architecture_plan: ArchitecturePlan | None = None
     final_result: FinalResult | None = None
+    revision: int = 0
 
     def __setstate__(self, state: object) -> None:
         """Backfill fields when loading older SessionRecord pickles."""
@@ -63,7 +63,7 @@ class SessionRecord:
             raise TypeError("invalid SessionRecord pickle state")
         for field_name, value in state.items():
             object.__setattr__(self, field_name, value)
-        if not hasattr(self, "revision"):
-            object.__setattr__(self, "revision", 0)
         if not hasattr(self, "approval_gates"):
             object.__setattr__(self, "approval_gates", [])
+        if not hasattr(self, "revision"):
+            object.__setattr__(self, "revision", 0)
