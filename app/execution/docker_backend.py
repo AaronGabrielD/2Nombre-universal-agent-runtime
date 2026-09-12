@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import shutil
-import subprocess
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from time import monotonic
@@ -10,6 +9,7 @@ from typing import Sequence
 
 from app.core.contracts import ArtifactRef, ExecutionRequest, ExecutionResult, ExecutionStatus
 
+from .bounded_process import BoundedProcessError, run_bounded_process
 from .models import ExecutionBackendInfo
 from .service import ExecutionBackend
 
@@ -113,24 +113,19 @@ class DockerExecutionBackend(ExecutionBackend):
             script.write_text(request.code, encoding="utf-8")
             command = self._docker_command(request, root)
             try:
-                completed = subprocess.run(
+                completed = run_bounded_process(
                     command,
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    shell=False,
+                    cwd=root,
+                    env={"PATH": shutil.which(self.docker_binary) or "", "HOME": "/tmp"},
                     timeout=request.timeout_seconds + 5,
-                    check=False,
+                    max_output_bytes=self.max_output_bytes,
                 )
-            except subprocess.TimeoutExpired as exc:
+            except BoundedProcessError as exc:
                 return self._result(
                     request,
-                    ExecutionStatus.TIMEOUT,
-                    self._bounded(exc.stdout or ""),
-                    self._bounded(exc.stderr or "") or "container execution timed out",
+                    ExecutionStatus.ERROR,
+                    "",
+                    str(exc),
                     None,
                     started,
                 )
@@ -146,6 +141,15 @@ class DockerExecutionBackend(ExecutionBackend):
 
             stdout = self._bounded(completed.stdout)
             stderr = self._bounded(completed.stderr)
+            if completed.timed_out:
+                return self._result(
+                    request,
+                    ExecutionStatus.TIMEOUT,
+                    stdout,
+                    stderr or "container execution timed out",
+                    None,
+                    started,
+                )
             status = (
                 ExecutionStatus.SUCCESS
                 if completed.returncode == 0
@@ -230,6 +234,9 @@ class DockerExecutionBackend(ExecutionBackend):
                 shutil.copy2(path, destination, follow_symlinks=False)
             except OSError:
                 continue
+            if destination.is_symlink():
+                destination.unlink(missing_ok=True)
+                continue
             total += size
             artifacts.append(
                 ArtifactRef(
@@ -240,10 +247,10 @@ class DockerExecutionBackend(ExecutionBackend):
             )
         return tuple(artifacts)
 
-    def _bounded(self, value: str) -> str:
-        encoded = value.encode("utf-8", errors="replace")
+    def _bounded(self, value: bytes) -> str:
+        encoded = bytes(value)
         if len(encoded) <= self.max_output_bytes:
-            return value
+            return encoded.decode("utf-8", errors="replace")
         return (
             encoded[: self.max_output_bytes].decode("utf-8", errors="ignore")
             + "\n[output truncated]"
