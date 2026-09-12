@@ -66,6 +66,7 @@ class ColabServiceTests(unittest.TestCase):
                         "worker_id": "worker-1",
                         "language": "python",
                         "code": "print('x')",
+                        "idempotency_key": "key-invalid-timeout",
                         "timeout_seconds": 0,
                     }
                 )
@@ -80,6 +81,7 @@ class ColabServiceTests(unittest.TestCase):
                     "worker_id": "worker-1",
                     "language": "python",
                     "code": "print('x')",
+                    "idempotency_key": "key-network-denied",
                     "needs_network": True,
                 }
             )
@@ -96,6 +98,7 @@ class ColabServiceTests(unittest.TestCase):
                     "worker_id": "worker-1",
                     "language": "ruby",
                     "code": "puts 'x'",
+                    "idempotency_key": "key-unsupported-language",
                 }
             )
             self.assertEqual(result["status"], "unavailable")
