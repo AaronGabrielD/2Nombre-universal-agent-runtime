@@ -103,6 +103,25 @@ class ColabServiceTests(unittest.TestCase):
             )
             self.assertEqual(result["status"], "unavailable")
 
+    def test_symlinked_artifacts_are_never_collected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            executor = ColabCodeExecutor(self._config(tmp))
+            workdir = Path(tmp) / "work"
+            execution_root = Path(tmp) / "artifacts" / "exec-symlink"
+            workdir.mkdir()
+            execution_root.mkdir(parents=True)
+            target = Path(tmp) / "outside-secret.txt"
+            target.write_text("must-not-export", encoding="utf-8")
+            link = workdir / "leak.txt"
+            try:
+                link.symlink_to(target)
+            except (NotImplementedError, OSError) as exc:
+                self.skipTest(f"symlink creation unavailable: {exc}")
+
+            artifacts = executor._collect_artifacts(workdir, execution_root, "exec-symlink")
+            self.assertEqual(artifacts, [])
+            self.assertFalse((execution_root / "leak.txt").exists())
+
 
 if __name__ == "__main__":
     unittest.main()
