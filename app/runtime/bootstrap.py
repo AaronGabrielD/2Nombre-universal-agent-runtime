@@ -46,11 +46,19 @@ class RuntimeApplication:
     approvals: HumanApprovalEngine
     identity: IdentityService
     run_authorization: RunAuthorizationService
+    tool_registry: ToolRegistry
+    tool_authorization: ToolAuthorizationService
+    execution_gateway: ExecutionGateway
 
 
-def build_runtime(settings: Settings | None = None) -> RuntimeApplication:
+def build_runtime(
+    settings: Settings | None = None,
+    *,
+    tool_registry: ToolRegistry | None = None,
+) -> RuntimeApplication:
     """Build one coherent runtime graph from environment-backed configuration."""
     settings = settings or get_settings()
+    settings.validate()
 
     sessions = SessionManager(repository=build_session_repository())
     approvals = HumanApprovalEngine(session_manager=sessions)
@@ -80,7 +88,7 @@ def build_runtime(settings: Settings | None = None) -> RuntimeApplication:
     )
 
     backends = []
-    if settings.execution_gateway_url:
+    if settings.execution_gateway_url and settings.execution_backend == "colab":
         backends.append(
             ColabExecutionBackend(
                 base_url=settings.execution_gateway_url,
@@ -88,17 +96,22 @@ def build_runtime(settings: Settings | None = None) -> RuntimeApplication:
                 timeout_seconds=settings.default_execution_timeout_seconds,
             )
         )
-    backends.append(
-        DockerExecutionBackend(
-            allow_network=os.getenv("DOCKER_ALLOW_NETWORK", "false").strip().lower() == "true",
-            artifact_root=os.getenv("DOCKER_ARTIFACT_ROOT") or None,
+    if settings.execution_backend in {"docker", "test"} or not backends:
+        backends.append(
+            DockerExecutionBackend(
+                allow_network=os.getenv("DOCKER_ALLOW_NETWORK", "false").strip().lower() == "true",
+                artifact_root=os.getenv("DOCKER_ARTIFACT_ROOT") or None,
+            )
         )
-    )
     gateway = ExecutionGateway(backends=tuple(backends), settings=settings)
-    worker_runtime = WorkerRuntimeAdapter(gateway=gateway, session_manager=sessions)
+    worker_runtime = WorkerRuntimeAdapter(gateway=gateway, session_manager=sessions, settings=settings)
 
-    registry = ToolRegistry()
-    tool_authorization = ToolAuthorizationService(registry=registry, approvals=approvals)
+    registry = tool_registry or ToolRegistry()
+    tool_authorization = ToolAuthorizationService(
+        registry=registry,
+        approvals=approvals,
+        settings=settings,
+    )
     orchestrator = IntegratedOrchestrator(
         coordinator=coordinator,
         session_manager=sessions,
@@ -108,6 +121,7 @@ def build_runtime(settings: Settings | None = None) -> RuntimeApplication:
         worker_agent=CrewAIWorkerAdapter(settings),
         supervisor=SupervisorService(),
         tool_authorization=tool_authorization,
+        settings=settings,
     )
 
     identity = IdentityService(
@@ -120,4 +134,7 @@ def build_runtime(settings: Settings | None = None) -> RuntimeApplication:
         approvals=approvals,
         identity=identity,
         run_authorization=RunAuthorizationService(),
+        tool_registry=registry,
+        tool_authorization=tool_authorization,
+        execution_gateway=gateway,
     )
