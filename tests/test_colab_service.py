@@ -8,6 +8,7 @@ from app.execution.colab_service import (
     ColabCodeExecutor,
     ColabExecutionServiceError,
     ExecutionServiceConfig,
+    RuntimeColabHTTPServer,
     _execution_environment,
     _safe_environment_key,
 )
@@ -102,6 +103,16 @@ class ColabServiceTests(unittest.TestCase):
                 }
             )
             self.assertEqual(result["status"], "unavailable")
+
+    def test_server_uses_shared_durable_execution_store(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = self._config(tmp)
+            server = RuntimeColabHTTPServer(("127.0.0.1", 0), config)
+            try:
+                self.assertIs(server.executor.store, server.execution_store)
+                self.assertEqual(server.runtime_config.execution_db_path, config.execution_db_path)
+            finally:
+                server.server_close()
 
     def test_symlinked_artifacts_are_never_collected(self):
         with tempfile.TemporaryDirectory() as tmp:
