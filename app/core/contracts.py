@@ -198,9 +198,12 @@ class ExecutionResult:
     duration_ms: int
     artifacts: tuple[ArtifactRef, ...] = ()
     backend: str = "unknown"
+    run_id: str | None = None
 
     def validate(self) -> None:
         require_non_empty_string("execution_id", self.execution_id)
+        if self.run_id is not None:
+            require_non_empty_string("run_id", self.run_id)
         if not isinstance(self.status, ExecutionStatus):
             try:
                 ExecutionStatus(self.status)
