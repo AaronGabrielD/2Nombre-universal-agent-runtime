@@ -113,7 +113,10 @@ def _normalize_base_url(base_url: str) -> str:
 def _read_bounded(stream, limit: int) -> bytes:
     if limit < 1:
         raise ValueError("limit must be positive")
-    data = stream.read(limit + 1)
+    try:
+        data = stream.read(limit + 1)
+    except TypeError:
+        data = stream.read()
     if len(data) > limit:
         raise ColabBackendError("Colab response exceeds configured size limit")
     return data
