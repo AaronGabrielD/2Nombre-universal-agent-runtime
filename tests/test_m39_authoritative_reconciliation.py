@@ -69,7 +69,7 @@ class M39AuthoritativeReconciliationTests(unittest.TestCase):
             stdout="remote-ok",
             stderr="",
             duration_ms=12,
-            backend="remote-fake",
+            backend="colab",
         )
         backend = FakeReconciler(authoritative)
         service = ExecutionReconciliationService(
@@ -95,7 +95,7 @@ class M39AuthoritativeReconciliationTests(unittest.TestCase):
                 stdout="",
                 stderr="",
                 duration_ms=1,
-                backend="remote-fake",
+                backend="colab",
             )
         )
         service = ExecutionReconciliationService(
