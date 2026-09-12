@@ -1,6 +1,7 @@
 """Worker runtime adapter for connecting M06 planning to M08 execution."""
 from __future__ import annotations
 
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from uuid import uuid4
@@ -69,7 +70,8 @@ class WorkerRuntimeAdapter:
         *,
         batch: DispatchBatch,
         tasks: tuple[WorkerExecutionTask, ...],
-        authorization: ExecutionAuthorization,
+        authorization: ExecutionAuthorization | None = None,
+        authorization_by_worker: Mapping[str, ExecutionAuthorization] | None = None,
         backend_id: str | None = None,
         parallel: bool = False,
     ) -> tuple[ExecutionResult, ...]:
@@ -77,12 +79,18 @@ class WorkerRuntimeAdapter:
         validated_tasks = tuple(tasks)
         for item in validated_tasks:
             item.validate()
+        authorizations = self._resolve_authorizations(
+            batch=batch,
+            tasks=validated_tasks,
+            authorization=authorization,
+            authorization_by_worker=authorization_by_worker,
+        )
         if not parallel or len(validated_tasks) <= 1:
             return tuple(
                 self._execute_one(
                     batch=batch,
                     item=item,
-                    authorization=authorization,
+                    authorization=authorizations[item.task.worker_id],
                     backend_id=backend_id,
                 )
                 for item in validated_tasks
@@ -94,12 +102,52 @@ class WorkerRuntimeAdapter:
                     self._execute_one,
                     batch=batch,
                     item=item,
-                    authorization=authorization,
+                    authorization=authorizations[item.task.worker_id],
                     backend_id=backend_id,
                 )
                 for item in validated_tasks
             )
             return tuple(future.result() for future in futures)
+
+    def _resolve_authorizations(
+        self,
+        *,
+        batch: DispatchBatch,
+        tasks: tuple[WorkerExecutionTask, ...],
+        authorization: ExecutionAuthorization | None,
+        authorization_by_worker: Mapping[str, ExecutionAuthorization] | None,
+    ) -> dict[str, ExecutionAuthorization]:
+        result: dict[str, ExecutionAuthorization] = {}
+        if authorization_by_worker is not None:
+            if set(authorization_by_worker) != {item.task.worker_id for item in tasks}:
+                raise WorkerRuntimeError(
+                    "authorization_by_worker must contain exactly one grant per task worker"
+                )
+            for item in tasks:
+                grant = authorization_by_worker[item.task.worker_id]
+                if not isinstance(grant, ExecutionAuthorization):
+                    raise WorkerRuntimeError("authorization_by_worker contains an invalid grant")
+                if not grant.authorized or grant.worker_id != item.task.worker_id:
+                    raise WorkerRuntimeError(
+                        f"authorization is not valid for worker {item.task.worker_id}"
+                    )
+                if grant.run_id != batch.run_id:
+                    raise WorkerRuntimeError("authorization run_id does not match batch")
+                result[item.task.worker_id] = grant
+            return result
+        if authorization is None:
+            raise WorkerRuntimeError("an explicit execution authorization is required")
+        if not authorization.authorized or authorization.run_id != batch.run_id:
+            raise WorkerRuntimeError("execution authorization does not match batch")
+        if authorization.worker_id not in {"*", *{item.task.worker_id for item in tasks}}:
+            raise WorkerRuntimeError("execution authorization does not match any task worker")
+        for item in tasks:
+            if authorization.worker_id not in {"*", item.task.worker_id}:
+                raise WorkerRuntimeError(
+                    f"worker-scoped execution requires authorization for {item.task.worker_id}"
+                )
+            result[item.task.worker_id] = authorization
+        return result
 
     def _validate_batch(
         self,
