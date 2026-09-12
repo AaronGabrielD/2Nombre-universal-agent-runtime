@@ -101,7 +101,7 @@ class M46ReconciliationBatchTests(unittest.TestCase):
             stdout="remote done",
             stderr="",
             duration_ms=2,
-            backend="remote-fake",
+            backend="colab",
         )
         reconciler = FakeReconciler({leases[1].execution_id: authoritative})
         reconciliation = ExecutionReconciliationService(
