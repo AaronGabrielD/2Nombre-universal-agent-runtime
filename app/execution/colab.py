@@ -49,7 +49,8 @@ class ColabExecutionBackend(ExecutionBackend):
 
     def execute(self, request: ExecutionRequest) -> ExecutionResult:
         request.validate(max_timeout_seconds=3600)
-        idempotency_key = request.environment.pop("__uar_idempotency_key", None) if False else None
+        if not request.idempotency_key:
+            raise ColabBackendError("Colab execution requires an explicit idempotency_key")
         payload = {
             "execution_id": request.execution_id,
             "run_id": request.run_id,
@@ -59,15 +60,13 @@ class ColabExecutionBackend(ExecutionBackend):
             "timeout_seconds": request.timeout_seconds,
             "needs_network": request.needs_network,
             "environment": dict(request.environment),
+            "idempotency_key": request.idempotency_key,
         }
-        # The gateway/lease layer supplies a deterministic execution identifier; the
-        # remote service also accepts an explicit idempotency key when present in env.
-        key = idempotency_key or request.execution_id
-        payload["idempotency_key"] = key
-
         headers = {
             "Content-Type": "application/json",
             "Accept": "application/json",
+            "X-Execution-Id": request.execution_id,
+            "X-Idempotency-Key": request.idempotency_key,
         }
         if self._token:
             headers["Authorization"] = f"Bearer {self._token}"
