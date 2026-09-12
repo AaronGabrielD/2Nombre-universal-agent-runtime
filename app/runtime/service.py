@@ -173,20 +173,39 @@ class RuntimeCoordinator:
             raise RuntimeCoordinatorError(
                 "Final approval requires a supervisor PASS while SUPERVISING"
             )
-        evidence_hash = _qa_hash(result)
+
         snapshot = self.sessions.snapshot(result.run_id)
-        latest_qa = _latest_qa_message(snapshot.messages)
-        if latest_qa is not None and latest_qa != evidence_hash:
+        plan = snapshot.architecture_plan
+        if plan is None:
             raise RuntimeCoordinatorError(
-                "Supervisor result does not match the latest persisted QA evidence"
+                "Supervisor evidence cannot be recorded without an ArchitecturePlan"
             )
+        recomputed = self.supervisor.evaluate(
+            SupervisorInput(
+                run_id=result.run_id,
+                objective=plan.objective,
+                acceptance_criteria=plan.acceptance_criteria,
+                worker_outputs=tuple(snapshot.worker_outputs.values()),
+                execution_results=snapshot.execution_results,
+                artifacts=tuple(to_dict(artifact) for artifact in snapshot.artifacts),
+            )
+        )
+        if recomputed != result:
+            raise RuntimeCoordinatorError(
+                "Supervisor result does not match independently recomputed session evidence"
+            )
+        if recomputed.status != QAStatus.PASS:
+            raise RuntimeCoordinatorError(
+                "Current session evidence no longer satisfies supervisor PASS"
+            )
+        evidence_hash = _qa_hash(recomputed)
         self.sessions.add_message(
             result.run_id,
             role="supervisor",
-            content=result.summary,
+            content=recomputed.summary,
             metadata={
                 "phase": "qa",
-                "qa_result": to_dict(result),
+                "qa_result": to_dict(recomputed),
                 "evidence_hash": evidence_hash,
             },
         )
@@ -199,7 +218,7 @@ class RuntimeCoordinator:
                 "Supervisor passed QA. Human approval is required before this "
                 "run becomes COMPLETED."
             ),
-            context={"qa_result": to_dict(result), "evidence_hash": evidence_hash},
+            context={"qa_result": to_dict(recomputed), "evidence_hash": evidence_hash},
         )
         return gate.gate_id
 
