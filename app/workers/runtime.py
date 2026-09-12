@@ -9,7 +9,7 @@ from uuid import uuid4
 from app.core.config import Settings, get_settings
 from app.core.contracts import ExecutionRequest, ExecutionResult, TaskSpec
 from app.execution.lease import ExecutionLeaseError, ExecutionLeaseService
-from app.execution.models import ExecutionAuthorization
+from app.execution.models import ExecutionAuthorization, bind_authorization_to_request
 from app.execution.service import ExecutionGateway
 from app.session.manager import SessionManager
 from app.session.repository import SessionNotFoundError
@@ -218,6 +218,17 @@ class WorkerRuntimeAdapter:
             environment=dict(item.environment),
             idempotency_key=key,
         )
+        if authorization.authorized and self.settings.execution_backend != "test":
+            try:
+                authorization = bind_authorization_to_request(
+                    self.settings.require_execution_authorization_secret(),
+                    authorization,
+                    execution,
+                )
+            except (ValueError, TypeError) as exc:
+                raise WorkerRuntimeError(
+                    f"failed to bind execution authorization: {exc}"
+                ) from exc
         try:
             lease = self.leases.reserve(
                 run_id=batch.run_id,
