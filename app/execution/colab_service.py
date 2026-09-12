@@ -1,18 +1,15 @@
-"""HTTP execution service intended to run inside a Google Colab runtime.
-
-This is the remote counterpart of ``ColabExecutionBackend``. It deliberately
-uses only the Python standard library. It authenticates requests, executes
-Python without a shell, enforces a timeout, captures bounded output, and exposes
-stored artifacts through a read endpoint.
-
-Important: a normal Colab VM is not a security sandbox. The static Python policy
-and ``needs_network`` admission check are defense-in-depth controls, not a
-replacement for OS/container isolation.
-"""
+"""HTTP execution service intended to run inside a Google Colab runtime."""
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import secrets
+import shutil
+import sqlite3
+import subprocess
+import sys
+import uuid
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -20,17 +17,20 @@ from tempfile import TemporaryDirectory
 from time import monotonic
 from typing import Any
 from urllib.parse import quote, unquote, urlparse
-import secrets
-import shutil
-import subprocess
-import sys
-import uuid
 
 from app.execution.policy import ExecutionPolicyError, PythonExecutionPolicy
 
 
 class ColabExecutionServiceError(ValueError):
     """Raised for invalid execution-service configuration or requests."""
+
+
+class ExecutionInProgressError(ColabExecutionServiceError):
+    """Raised when a duplicate request is already executing."""
+
+
+class ExecutionConflictError(ColabExecutionServiceError):
+    """Raised when an idempotency key is reused for different work."""
 
 
 class ExecutionServiceConfig:
@@ -43,35 +43,113 @@ class ExecutionServiceConfig:
         self.artifact_root = Path(
             os.getenv("RUNTIME_ARTIFACT_ROOT", "/content/universal-agent-runtime-artifacts")
         ).resolve()
+        self.execution_db_path = Path(
+            os.getenv("RUNTIME_EXECUTION_DB", str(self.artifact_root / "executions.db"))
+        ).expanduser().resolve()
         self.max_request_bytes = _int_env("RUNTIME_MAX_REQUEST_BYTES", 2 * 1024 * 1024, minimum=1024)
         self.max_output_bytes = _int_env("RUNTIME_MAX_OUTPUT_BYTES", 256 * 1024, minimum=1024)
         self.max_artifact_bytes = _int_env("RUNTIME_MAX_ARTIFACT_BYTES", 10 * 1024 * 1024, minimum=1024)
+        self.max_total_artifact_bytes = _int_env(
+            "RUNTIME_MAX_TOTAL_ARTIFACT_BYTES", 32 * 1024 * 1024, minimum=1024
+        )
         self.max_artifacts = _int_env("RUNTIME_MAX_ARTIFACTS", 20, minimum=1, maximum=100)
         self.default_timeout_seconds = _int_env("RUNTIME_DEFAULT_TIMEOUT_SECONDS", 60, minimum=1, maximum=3600)
         self.max_timeout_seconds = _int_env("RUNTIME_MAX_TIMEOUT_SECONDS", 600, minimum=1, maximum=3600)
         self.allow_network_requests = _bool_env("RUNTIME_ALLOW_NETWORK", False)
         self.python_policy_mode = os.getenv("RUNTIME_PYTHON_POLICY", "restricted").strip().lower()
+        self.public_base_url = os.getenv("RUNTIME_PUBLIC_BASE_URL", "").strip().rstrip("/")
         if self.python_policy_mode not in {"restricted", "unsafe"}:
             raise ColabExecutionServiceError("RUNTIME_PYTHON_POLICY must be 'restricted' or 'unsafe'")
-        self.public_base_url = os.getenv("RUNTIME_PUBLIC_BASE_URL", "").strip().rstrip("/")
         if not self.token:
             raise ColabExecutionServiceError("RUNTIME_EXECUTION_TOKEN must be configured")
+        if self.execution_db_path.parent != self.artifact_root:
+            self.execution_db_path.parent.mkdir(parents=True, exist_ok=True)
         self.artifact_root.mkdir(parents=True, exist_ok=True)
+
+
+class ExecutionStore:
+    """SQLite-backed idempotency and result authority for remote executions."""
+
+    def __init__(self, database_path: Path) -> None:
+        self.path = database_path
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with sqlite3.connect(self.path) as connection:
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS executions (
+                    execution_id TEXT PRIMARY KEY,
+                    idempotency_key TEXT NOT NULL UNIQUE,
+                    request_fingerprint TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    result_json TEXT,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+
+    def reserve(self, *, execution_id: str, idempotency_key: str, request_fingerprint: str) -> dict[str, Any] | None:
+        with sqlite3.connect(self.path) as connection:
+            try:
+                connection.execute(
+                    "INSERT INTO executions(execution_id,idempotency_key,request_fingerprint,status) VALUES(?,?,?,?)",
+                    (execution_id, idempotency_key, request_fingerprint, "running"),
+                )
+                return None
+            except sqlite3.IntegrityError:
+                row = connection.execute(
+                    "SELECT execution_id,idempotency_key,request_fingerprint,status,result_json FROM executions WHERE execution_id = ? OR idempotency_key = ?",
+                    (execution_id, idempotency_key),
+                ).fetchone()
+                if row is None:
+                    raise ColabExecutionServiceError("execution reservation conflict")
+                if row[2] != request_fingerprint:
+                    raise ExecutionConflictError("execution idempotency key was reused for different work")
+                if row[3] == "running":
+                    raise ExecutionInProgressError("execution is already in progress")
+                if row[3] == "completed" and row[4]:
+                    return json.loads(row[4])
+                raise ColabExecutionServiceError("stored execution record is invalid")
+
+    def complete(self, *, execution_id: str, result: dict[str, Any]) -> None:
+        with sqlite3.connect(self.path) as connection:
+            updated = connection.execute(
+                "UPDATE executions SET status = ?, result_json = ? WHERE execution_id = ? AND status = 'running'",
+                ("completed", json.dumps(result, ensure_ascii=False, sort_keys=True), execution_id),
+            ).rowcount
+            if updated != 1:
+                raise ColabExecutionServiceError("execution completion record was not writable")
+
+    def get(self, execution_id: str) -> dict[str, Any] | None:
+        with sqlite3.connect(self.path) as connection:
+            row = connection.execute(
+                "SELECT status,result_json FROM executions WHERE execution_id = ?", (execution_id,)
+            ).fetchone()
+        if row is None or row[0] != "completed" or not row[1]:
+            return None
+        payload = json.loads(row[1])
+        return payload if isinstance(payload, dict) else None
 
 
 class ColabExecutionRequestHandler(BaseHTTPRequestHandler):
     """Small JSON API for one remote execution backend."""
 
-    server_version = "UniversalAgentRuntime-Colab/1.0"
+    server_version = "UniversalAgentRuntime-Colab/1.1"
 
     @property
     def config(self) -> ExecutionServiceConfig:
         return self.server.runtime_config  # type: ignore[attr-defined]
 
+    @property
+    def store(self) -> ExecutionStore:
+        return self.server.execution_store  # type: ignore[attr-defined]
+
     def do_GET(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
         if path == "/health":
             self._send_json(HTTPStatus.OK, {"status": "ok", "backend": "colab-service"})
+            return
+        if path.startswith("/executions/"):
+            self._serve_execution(path)
             return
         if path.startswith("/artifacts/"):
             self._serve_artifact(path)
@@ -86,17 +164,22 @@ class ColabExecutionRequestHandler(BaseHTTPRequestHandler):
         if not self._authorized():
             self._send_json(HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
             return
-
         try:
             payload = self._read_json()
             response = self.server.executor.execute(payload)  # type: ignore[attr-defined]
+        except ExecutionInProgressError as exc:
+            self._send_json(HTTPStatus.CONFLICT, {"error": str(exc)})
+            return
+        except ExecutionConflictError as exc:
+            self._send_json(HTTPStatus.CONFLICT, {"error": str(exc)})
+            return
         except ColabExecutionServiceError as exc:
             self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
             return
         except Exception as exc:
-            self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": f"internal error: {exc}"})
+            self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "internal execution-service error"})
+            print(f"[colab-service] internal error: {type(exc).__name__}: {exc}")
             return
-
         self._send_json(HTTPStatus.OK, response)
 
     def log_message(self, fmt: str, *args: object) -> None:
@@ -120,6 +203,8 @@ class ColabExecutionRequestHandler(BaseHTTPRequestHandler):
         if size < 0 or size > self.config.max_request_bytes:
             raise ColabExecutionServiceError("request body exceeds configured limit")
         raw = self.rfile.read(size)
+        if len(raw) != size:
+            raise ColabExecutionServiceError("request body was truncated")
         try:
             payload = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -127,6 +212,20 @@ class ColabExecutionRequestHandler(BaseHTTPRequestHandler):
         if not isinstance(payload, dict):
             raise ColabExecutionServiceError("request JSON must be an object")
         return payload
+
+    def _serve_execution(self, path: str) -> None:
+        if not self._authorized():
+            self._send_json(HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
+            return
+        execution_id = unquote(path.rsplit("/", 1)[-1])
+        if not _safe_identifier(execution_id):
+            self._send_json(HTTPStatus.NOT_FOUND, {"error": "not_found"})
+            return
+        result = self.store.get(execution_id)
+        if result is None:
+            self._send_json(HTTPStatus.NOT_FOUND, {"error": "not_found"})
+            return
+        self._send_json(HTTPStatus.OK, result)
 
     def _serve_artifact(self, path: str) -> None:
         if not self._authorized():
@@ -141,27 +240,32 @@ class ColabExecutionRequestHandler(BaseHTTPRequestHandler):
         if not _safe_identifier(execution_id) or relative.is_absolute() or ".." in relative.parts:
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "not_found"})
             return
-        root = self.config.artifact_root / execution_id
+        root = (self.config.artifact_root / execution_id).resolve()
         target = (root / relative).resolve()
         try:
-            target.relative_to(root.resolve())
+            target.relative_to(root)
         except ValueError:
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "not_found"})
             return
         if not target.is_file():
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "not_found"})
             return
-        data = target.read_bytes()
+        size = target.stat().st_size
+        if size > self.config.max_artifact_bytes:
+            self._send_json(HTTPStatus.NOT_FOUND, {"error": "not_found"})
+            return
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "application/octet-stream")
-        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Content-Length", str(size))
         self.end_headers()
-        self.wfile.write(data)
+        with target.open("rb") as stream:
+            shutil.copyfileobj(stream, self.wfile, length=64 * 1024)
 
     def _send_json(self, status: HTTPStatus, payload: dict[str, Any]) -> None:
-        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        data = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
@@ -170,43 +274,64 @@ class ColabExecutionRequestHandler(BaseHTTPRequestHandler):
 class ColabCodeExecutor:
     """Translate validated execution requests into local subprocesses."""
 
-    def __init__(self, config: ExecutionServiceConfig) -> None:
+    def __init__(self, config: ExecutionServiceConfig, store: ExecutionStore | None = None) -> None:
         self.config = config
         self.policy = PythonExecutionPolicy()
+        self.store = store or ExecutionStore(config.execution_db_path)
 
     def execute(self, payload: dict[str, Any]) -> dict[str, Any]:
         request = self._validate_request(payload)
+        execution_id = request["execution_id"]
+        fingerprint = _request_fingerprint(request)
+        existing = self.store.reserve(
+            execution_id=execution_id,
+            idempotency_key=request["idempotency_key"],
+            request_fingerprint=fingerprint,
+        )
+        if existing is not None:
+            return existing
+
         started = monotonic()
+        try:
+            result = self._execute_reserved(request, started)
+        except Exception:
+            # Keep the durable row as RUNNING. A recovery caller can discover that execution
+            # was interrupted and must query/reconcile instead of blindly replaying it.
+            raise
+        self.store.complete(execution_id=execution_id, result=result)
+        return result
+
+    def _execute_reserved(self, request: dict[str, Any], started: float) -> dict[str, Any]:
         execution_id = request["execution_id"]
         timeout = request["timeout_seconds"]
-        needs_network = request["needs_network"]
 
-        if needs_network and not self.config.allow_network_requests:
+        if request["needs_network"] and not self.config.allow_network_requests:
             return self._result(
                 execution_id=execution_id,
+                run_id=request["run_id"],
                 status="denied",
                 stdout="",
                 stderr="network execution is disabled by service policy",
                 exit_code=None,
                 duration_ms=_duration_ms(started),
             )
-
         if request["language"] != "python":
             return self._result(
                 execution_id=execution_id,
+                run_id=request["run_id"],
                 status="unavailable",
                 stdout="",
                 stderr=f"unsupported language: {request['language']}",
                 exit_code=None,
                 duration_ms=_duration_ms(started),
             )
-
         if self.config.python_policy_mode == "restricted":
             try:
                 self.policy.validate(request["code"])
             except ExecutionPolicyError as exc:
                 return self._result(
                     execution_id=execution_id,
+                    run_id=request["run_id"],
                     status="denied",
                     stdout="",
                     stderr=f"python execution blocked by policy: {exc}",
@@ -237,27 +362,23 @@ class ColabCodeExecutor:
                     check=False,
                 )
             except subprocess.TimeoutExpired as exc:
-                stdout = _bounded_text(exc.stdout or "", self.config.max_output_bytes)
-                stderr = _bounded_text(exc.stderr or "", self.config.max_output_bytes)
                 return self._result(
                     execution_id=execution_id,
+                    run_id=request["run_id"],
                     status="timeout",
-                    stdout=stdout,
-                    stderr=stderr or f"execution exceeded {timeout} seconds",
+                    stdout=_bounded_text(exc.stdout or "", self.config.max_output_bytes),
+                    stderr=_bounded_text(exc.stderr or "", self.config.max_output_bytes) or f"execution exceeded {timeout} seconds",
                     exit_code=None,
                     duration_ms=_duration_ms(started),
                 )
-
             artifacts = self._collect_artifacts(workdir, execution_root, execution_id)
 
-        stdout = _bounded_text(completed.stdout, self.config.max_output_bytes)
-        stderr = _bounded_text(completed.stderr, self.config.max_output_bytes)
-        status = "success" if completed.returncode == 0 else "error"
         return self._result(
             execution_id=execution_id,
-            status=status,
-            stdout=stdout,
-            stderr=stderr,
+            run_id=request["run_id"],
+            status="success" if completed.returncode == 0 else "error",
+            stdout=_bounded_text(completed.stdout, self.config.max_output_bytes),
+            stderr=_bounded_text(completed.stderr, self.config.max_output_bytes),
             exit_code=completed.returncode,
             duration_ms=_duration_ms(started),
             artifacts=artifacts,
@@ -269,12 +390,8 @@ class ColabCodeExecutor:
             value = payload.get(key)
             if not isinstance(value, str) or not value.strip():
                 raise ColabExecutionServiceError(f"{key} must be a non-empty string")
-        if not _safe_identifier(payload["execution_id"]):
-            raise ColabExecutionServiceError("invalid execution_id")
-        if not _safe_identifier(payload["run_id"]):
-            raise ColabExecutionServiceError("invalid run_id")
-        if not _safe_identifier(payload["worker_id"]):
-            raise ColabExecutionServiceError("invalid worker_id")
+        if not _safe_identifier(payload["execution_id"]) or not _safe_identifier(payload["run_id"]) or not _safe_identifier(payload["worker_id"]):
+            raise ColabExecutionServiceError("execution identifiers are invalid")
         language = payload["language"].strip().lower()
         timeout = payload.get("timeout_seconds", self.config.default_timeout_seconds)
         if not isinstance(timeout, int) or isinstance(timeout, bool):
@@ -285,10 +402,11 @@ class ColabCodeExecutor:
         if not isinstance(needs_network, bool):
             raise ColabExecutionServiceError("needs_network must be boolean")
         environment = payload.get("environment", {})
-        if not isinstance(environment, dict) or not all(
-            isinstance(k, str) and isinstance(v, str) for k, v in environment.items()
-        ):
+        if not isinstance(environment, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in environment.items()):
             raise ColabExecutionServiceError("environment must be a string-to-string object")
+        idempotency_key = payload.get("idempotency_key")
+        if not isinstance(idempotency_key, str) or not idempotency_key.strip() or len(idempotency_key) > 256:
+            raise ColabExecutionServiceError("idempotency_key must be a non-empty string of at most 256 characters")
         return {
             "execution_id": payload["execution_id"].strip(),
             "run_id": payload["run_id"].strip(),
@@ -297,31 +415,39 @@ class ColabCodeExecutor:
             "code": payload["code"],
             "timeout_seconds": timeout,
             "needs_network": needs_network,
-            "environment": environment,
+            "environment": dict(environment),
+            "idempotency_key": idempotency_key.strip(),
         }
 
     def _collect_artifacts(self, workdir: Path, execution_root: Path, execution_id: str) -> list[dict[str, Any]]:
         collected: list[dict[str, Any]] = []
+        total_bytes = 0
         for path in sorted(workdir.rglob("*")):
             if not path.is_file():
                 continue
             relative = path.relative_to(workdir)
             if relative == Path("main.py"):
                 continue
+            if len(collected) >= self.config.max_artifacts:
+                break
             size = path.stat().st_size
             if size > self.config.max_artifact_bytes:
                 continue
-            if len(collected) >= self.config.max_artifacts:
+            if total_bytes + size > self.config.max_total_artifact_bytes:
                 break
             destination = (execution_root / relative).resolve()
+            try:
+                destination.relative_to(execution_root)
+            except ValueError:
+                continue
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(path, destination)
-            uri = self._artifact_uri(execution_id, relative)
+            total_bytes += size
             collected.append({
                 "artifact_id": f"artifact-{uuid.uuid4().hex}",
                 "name": relative.as_posix(),
                 "mime_type": None,
-                "uri": uri,
+                "uri": self._artifact_uri(execution_id, relative),
             })
         return collected
 
@@ -332,18 +458,19 @@ class ColabCodeExecutor:
         return f"artifact://{execution_id}/{encoded}"
 
     @staticmethod
-    def _result(*, execution_id: str, status: str, stdout: str, stderr: str,
+    def _result(*, execution_id: str, run_id: str, status: str, stdout: str, stderr: str,
                 exit_code: int | None, duration_ms: int,
                 artifacts: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         return {
             "execution_id": execution_id,
+            "run_id": run_id,
             "status": status,
             "stdout": stdout,
             "stderr": stderr,
             "exit_code": exit_code,
             "duration_ms": duration_ms,
             "artifacts": artifacts or [],
-            "backend": "colab-service",
+            "backend": "colab",
         }
 
 
@@ -355,7 +482,8 @@ class RuntimeColabHTTPServer(ThreadingHTTPServer):
     def __init__(self, address: tuple[str, int], config: ExecutionServiceConfig) -> None:
         super().__init__(address, ColabExecutionRequestHandler)
         self.runtime_config = config
-        self.executor = ColabCodeExecutor(config)
+        self.execution_store = ExecutionStore(config.execution_db_path)
+        self.executor = ColabCodeExecutor(config, store=self.execution_store)
 
 
 def serve_forever(config: ExecutionServiceConfig | None = None) -> None:
@@ -366,6 +494,19 @@ def serve_forever(config: ExecutionServiceConfig | None = None) -> None:
         server.serve_forever()
     finally:
         server.server_close()
+
+
+def _request_fingerprint(request: dict[str, Any]) -> str:
+    material = {
+        "run_id": request["run_id"],
+        "worker_id": request["worker_id"],
+        "language": request["language"],
+        "code": request["code"],
+        "timeout_seconds": request["timeout_seconds"],
+        "needs_network": request["needs_network"],
+        "environment": dict(sorted(request["environment"].items())),
+    }
+    return hashlib.sha256(json.dumps(material, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
 def _execution_environment(requested: dict[str, str], workdir: Path) -> dict[str, str]:
