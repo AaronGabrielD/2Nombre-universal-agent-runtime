@@ -4,7 +4,6 @@ from app.agents.crewai_adapter import WorkerExecutionPlan
 from app.approval.service import HumanApprovalEngine
 from app.core.contracts import ArchitecturePlan, ExecutionResult, ExecutionStatus, HumanDecisionType, RiskLevel, WorkerSpec
 from app.core.states import WorkflowState
-from app.execution import ExecutionBackend, ExecutionBackendInfo, ExecutionGateway
 from app.intake.service import IntakeService
 from app.orchestration.service import IntegratedOrchestrator
 from app.runtime.service import RuntimeCoordinator
@@ -92,6 +91,7 @@ def settings():
         execution_backend="revision-test",
         execution_gateway_url=None,
         execution_gateway_token=None,
+        execution_authorization_secret="test-execution-authorization-secret-1234567890",
     )
 
 
