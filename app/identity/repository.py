@@ -1,6 +1,7 @@
 """Durable repositories for M26 identities."""
 from __future__ import annotations
 
+from copy import deepcopy
 import sqlite3
 from threading import RLock
 from typing import Protocol
@@ -37,14 +38,16 @@ class InMemoryUserRepository:
     def create(self, user: UserRecord) -> UserRecord:
         user.validate()
         username = _normalize_username(user.username)
+        stored = deepcopy(user)
+        stored.username = username if hasattr(stored, "__dict__") else stored.username
         with self._lock:
             if user.user_id in self._users:
                 raise ValueError(f"user_id already exists: {user.user_id}")
             if username in self._by_username:
                 raise ValueError(f"username already exists: {user.username}")
-            self._users[user.user_id] = user
+            self._users[user.user_id] = stored
             self._by_username[username] = user.user_id
-        return user
+        return deepcopy(stored)
 
     def get_by_username(self, username: str) -> UserRecord:
         normalized = _normalize_username(username)
@@ -52,20 +55,20 @@ class InMemoryUserRepository:
             user_id = self._by_username.get(normalized)
             if user_id is None:
                 raise UserNotFoundError(f"Unknown username: {username}")
-            return self._users[user_id]
+            return deepcopy(self._users[user_id])
 
     def get_by_id(self, user_id: str) -> UserRecord:
         if not isinstance(user_id, str) or not user_id.strip():
             raise ValueError("user_id must be a non-empty string")
         with self._lock:
             try:
-                return self._users[user_id]
+                return deepcopy(self._users[user_id])
             except KeyError as exc:
                 raise UserNotFoundError(f"Unknown user_id: {user_id}") from exc
 
     def list_users(self) -> tuple[UserRecord, ...]:
         with self._lock:
-            return tuple(self._users.values())
+            return tuple(deepcopy(user) for user in self._users.values())
 
 
 class SQLiteUserRepository:
