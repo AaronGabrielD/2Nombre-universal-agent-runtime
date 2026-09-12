@@ -1,8 +1,9 @@
+import os
 import sys
 import tempfile
 import unittest
 
-from app.execution.bounded_process import BoundedProcessError, run_bounded_process
+from app.execution.bounded_process import run_bounded_process
 
 
 class BoundedProcessTests(unittest.TestCase):
@@ -10,7 +11,7 @@ class BoundedProcessTests(unittest.TestCase):
         result = run_bounded_process(
             [sys.executable, "-c", "print('x' * 10000000)"],
             cwd=tempfile.gettempdir(),
-            env={"PATH": __import__("os").environ.get("PATH", "")},
+            env={"PATH": os.environ.get("PATH", "")},
             timeout=10,
             max_output_bytes=1024,
         )
@@ -24,12 +25,12 @@ class BoundedProcessTests(unittest.TestCase):
         result = run_bounded_process(
             [sys.executable, "-c", code],
             cwd=tempfile.gettempdir(),
-            env={"PATH": __import__("os").environ.get("PATH", "")},
+            env={"PATH": os.environ.get("PATH", "")},
             timeout=1,
             max_output_bytes=1024,
         )
         self.assertTrue(result.timed_out)
-        self.assertEqual(result.stdout.__len__(), 1025)
+        self.assertEqual(len(result.stdout), 1025)
 
     def test_empty_command_is_rejected(self):
         with self.assertRaises(ValueError):
