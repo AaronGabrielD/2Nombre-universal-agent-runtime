@@ -20,7 +20,6 @@ COPY README.md /app/README.md
 COPY BLUEPRINT_MASTER_v1.md /app/BLUEPRINT_MASTER_v1.md
 COPY docs /app/docs
 COPY .chainlit /app/.chainlit
-COPY config.toml /app/config.toml
 
 RUN useradd --create-home --home-dir /home/uar --shell /usr/sbin/nologin uar \
     && mkdir -p /data \
