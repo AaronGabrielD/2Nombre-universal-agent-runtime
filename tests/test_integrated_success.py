@@ -2,14 +2,14 @@ import unittest
 
 from app.agents.crewai_adapter import WorkerExecutionPlan
 from app.approval.service import HumanApprovalEngine
-from app.core.contracts import ArchitecturePlan, ExecutionResult, ExecutionStatus, HumanDecisionType, RiskLevel, WorkerSpec
+from app.core.contracts import ArchitecturePlan, ExecutionResult, ExecutionStatus, HumanDecisionType, WorkerSpec
 from app.core.states import WorkflowState
 from app.execution import ExecutionBackend, ExecutionBackendInfo, ExecutionGateway
 from app.intake.service import IntakeService
 from app.orchestration.service import IntegratedOrchestrator
 from app.runtime.service import RuntimeCoordinator
 from app.session.manager import SessionManager
-from app.supervisor.models import QAResult, QAStatus, SupervisorInput
+from app.supervisor.service import SupervisorService
 from app.workers.runtime import WorkerExecutionTask, WorkerRuntimeAdapter
 
 
@@ -46,21 +46,6 @@ class SuccessWorkerAgent:
         )
 
 
-class PassSupervisor:
-    def evaluate(self, data: SupervisorInput) -> QAResult:
-        self.last_data = data
-        return QAResult(
-            run_id=data.run_id,
-            status=QAStatus.PASS,
-            score=1.0,
-            summary="Integration path passed.",
-            findings=(),
-            blocking_issues=(),
-            recommended_action="complete",
-            evidence={"source": "integration-test"},
-        )
-
-
 def settings():
     from app.core.config import Settings
 
@@ -88,10 +73,12 @@ class IntegratedSuccessPathTests(unittest.TestCase):
         sessions = SessionManager()
         approvals = HumanApprovalEngine()
         intake = IntakeService(session_manager=sessions, settings=settings_value)
+        supervisor = SupervisorService()
         coordinator = RuntimeCoordinator(
             session_manager=sessions,
             intake_service=intake,
             approval_engine=approvals,
+            supervisor=supervisor,
         )
         run = coordinator.start_run("Build an integration test")
         plan = ArchitecturePlan(
@@ -124,7 +111,6 @@ class IntegratedSuccessPathTests(unittest.TestCase):
         self.assertEqual(coordinator.apply_architecture_decision(decision), WorkflowState.EXECUTING)
 
         gateway = ExecutionGateway(backends=(SuccessBackend(),), settings=settings_value)
-        supervisor = PassSupervisor()
         orchestrator = IntegratedOrchestrator(
             coordinator=coordinator,
             session_manager=sessions,
@@ -142,7 +128,7 @@ class IntegratedSuccessPathTests(unittest.TestCase):
         self.assertEqual(len(result.execution_results), 1)
         self.assertEqual(result.execution_results[0].status, ExecutionStatus.SUCCESS)
         self.assertEqual(result.execution_results[0].stdout, "INTEGRATION_OK")
-        self.assertEqual(result.qa_result.status, QAStatus.PASS)
+        self.assertEqual(result.qa_result.status.value, "pass")
         self.assertIsNotNone(result.final_gate_id)
         self.assertEqual(
             sessions.get_context(run.run_id).state,
