@@ -18,6 +18,9 @@ class ColabReconcilerError(RuntimeError):
 class ColabExecutionReconciler(ExecutionReconciler):
     """Query persisted execution evidence from a protected Colab authority endpoint."""
 
+    MAX_RESPONSE_BYTES = 4 * 1024 * 1024
+    MAX_ARTIFACTS = 64
+
     def __init__(
         self,
         *,
@@ -56,7 +59,7 @@ class ColabExecutionReconciler(ExecutionReconciler):
         )
         try:
             with urlopen(request, timeout=self._timeout_seconds) as response:
-                raw = response.read()
+                raw = _read_bounded_response(response, self.MAX_RESPONSE_BYTES)
         except HTTPError as exc:
             if exc.code == 404:
                 return None
@@ -77,8 +80,23 @@ class ColabExecutionReconciler(ExecutionReconciler):
             raise ColabReconcilerError("Colab authority returned invalid JSON") from exc
         if not isinstance(payload, dict):
             raise ColabReconcilerError("Colab authority response must be a JSON object")
-        result = _result_from_payload(payload, execution_id)
-        return result
+        return _result_from_payload(payload, execution_id)
+
+
+def _read_bounded_response(response, limit: int) -> bytes:
+    """Read at most one byte beyond the configured limit to detect oversized bodies."""
+    chunks: list[bytes] = []
+    remaining = limit
+    while remaining > 0:
+        chunk = response.read(min(64 * 1024, remaining))
+        if not chunk:
+            return b"".join(chunks)
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    extra = response.read(1)
+    if extra:
+        raise ColabReconcilerError("Colab authority response exceeds safety limit")
+    return b"".join(chunks)
 
 
 def _result_from_payload(payload: dict[str, object], execution_id: str) -> ExecutionResult:
@@ -105,6 +123,8 @@ def _result_from_payload(payload: dict[str, object], execution_id: str) -> Execu
     artifacts_raw = payload.get("artifacts", [])
     if not isinstance(artifacts_raw, list):
         raise ColabReconcilerError("artifacts must be a list")
+    if len(artifacts_raw) > ColabExecutionReconciler.MAX_ARTIFACTS:
+        raise ColabReconcilerError("Colab authority returned too many artifacts")
     artifacts: list[ArtifactRef] = []
     for item in artifacts_raw:
         if not isinstance(item, dict):
@@ -123,9 +143,12 @@ def _result_from_payload(payload: dict[str, object], execution_id: str) -> Execu
             raise ColabReconcilerError("artifact uri must be a string or null")
         artifacts.append(ArtifactRef(artifact_id=artifact_id, name=name, mime_type=mime_type, uri=uri))
 
-    backend = payload.get("backend", "colab-authority")
-    if not isinstance(backend, str) or not backend.strip():
-        raise ColabReconcilerError("backend must be a non-empty string")
+    backend = payload.get("backend", "colab")
+    if backend != "colab":
+        raise ColabReconcilerError("Colab authority returned invalid backend provenance")
+    run_id = payload.get("run_id")
+    if run_id is not None and (not isinstance(run_id, str) or not run_id.strip()):
+        raise ColabReconcilerError("run_id must be a non-empty string or null")
 
     return ExecutionResult(
         execution_id=execution_id,
@@ -135,7 +158,8 @@ def _result_from_payload(payload: dict[str, object], execution_id: str) -> Execu
         stderr=stderr,
         duration_ms=duration_ms,
         artifacts=tuple(artifacts),
-        backend=backend,
+        backend="colab",
+        run_id=run_id,
     )
 
 
@@ -150,7 +174,7 @@ def _normalize_base_url(base_url: str) -> str:
 
 def _read_error_body(exc: HTTPError) -> str:
     try:
-        return exc.read().decode("utf-8", errors="replace").strip()[:1000]
+        return exc.read(4097).decode("utf-8", errors="replace").strip()[:1000]
     except OSError:
         return ""
 
