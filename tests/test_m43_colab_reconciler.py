@@ -18,7 +18,7 @@ class _AuthorityHandler(BaseHTTPRequestHandler):
             "stderr": "",
             "duration_ms": 17,
             "artifacts": [],
-            "backend": "colab-service",
+            "backend": "colab",
         },
     }
     token = "authority-token"
@@ -88,7 +88,7 @@ class M43ColabReconcilerTests(unittest.TestCase):
             "stderr": "",
             "duration_ms": 1,
             "artifacts": [],
-            "backend": "colab-service",
+            "backend": "colab",
         }
         reconciler = ColabExecutionReconciler(base_url=self.base_url, token="authority-token")
         with self.assertRaises(ColabReconcilerError):
