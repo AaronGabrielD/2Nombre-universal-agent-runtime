@@ -25,6 +25,7 @@ def _settings():
         execution_backend="colab",
         execution_gateway_url="https://example.invalid",
         execution_gateway_token="test-token",
+        execution_authorization_secret="test-execution-authorization-secret-1234567890",
     )
 
 
