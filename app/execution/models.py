@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
+import hmac
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,10 +25,10 @@ class ExecutionBackendInfo:
 
 @dataclass(frozen=True, slots=True)
 class ExecutionAuthorization:
-    """Scoped execution grant produced by the authorization boundary.
+    """Scoped execution grant with optional cryptographic proof.
 
-    A boolean alone is deliberately insufficient: an execution grant is bound
-    to the run, worker, backend and network requirement it authorizes.
+    Production gateways require a proof generated from the server-side secret.
+    Tests may omit it when using the explicit ``test`` execution backend.
     """
 
     authorized: bool
@@ -36,6 +38,7 @@ class ExecutionAuthorization:
     worker_id: str | None = None
     backend_id: str | None = None
     network_allowed: bool = False
+    proof: str | None = None
 
     def validate(self) -> None:
         if not isinstance(self.authorized, bool):
@@ -52,3 +55,33 @@ class ExecutionAuthorization:
             raise ValueError("gate_id must be a non-empty string when supplied")
         if not isinstance(self.network_allowed, bool):
             raise ValueError("network_allowed must be boolean")
+        if self.proof is not None and (not isinstance(self.proof, str) or not self.proof.strip()):
+            raise ValueError("proof must be a non-empty string when supplied")
+
+    def signing_material(self) -> str:
+        self.validate()
+        return "\x1f".join(
+            (
+                "1",
+                "1" if self.authorized else "0",
+                self.reason,
+                self.gate_id or "",
+                self.run_id or "",
+                self.worker_id or "",
+                self.backend_id or "",
+                "1" if self.network_allowed else "0",
+            )
+        )
+
+
+def compute_authorization_proof(secret: str, authorization: ExecutionAuthorization) -> str:
+    if not isinstance(secret, str) or len(secret) < 32:
+        raise ValueError("authorization secret must be at least 32 characters")
+    return hmac.new(secret.encode("utf-8"), authorization.signing_material().encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def verify_authorization_proof(secret: str, authorization: ExecutionAuthorization) -> bool:
+    if not isinstance(secret, str) or len(secret) < 32 or not authorization.proof:
+        return False
+    expected = compute_authorization_proof(secret, authorization)
+    return hmac.compare_digest(expected, authorization.proof)
