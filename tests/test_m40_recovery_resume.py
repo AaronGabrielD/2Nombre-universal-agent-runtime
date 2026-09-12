@@ -87,7 +87,7 @@ class M40RecoveryResumeTests(unittest.TestCase):
                 stdout="ok",
                 stderr="",
                 duration_ms=11,
-                backend="fake",
+                backend="colab",
             )
         )
         reconciliation = ExecutionReconciliationService(
