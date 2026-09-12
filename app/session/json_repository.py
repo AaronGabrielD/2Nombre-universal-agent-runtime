@@ -9,7 +9,17 @@ from threading import RLock
 from typing import Any
 
 from app.approval.models import ApprovalGate, GateStatus
-from app.core.contracts import ArchitecturePlan, ArtifactRef, ExecutionResult, ExecutionStatus, FinalResult, HumanDecision, HumanDecisionType, WorkerSpec, to_dict
+from app.core.contracts import (
+    ArchitecturePlan,
+    ArtifactRef,
+    ExecutionResult,
+    ExecutionStatus,
+    FinalResult,
+    HumanDecision,
+    HumanDecisionType,
+    WorkerSpec,
+    to_dict,
+)
 from app.core.models import RunContext
 from app.core.states import WorkflowState
 
@@ -20,7 +30,7 @@ from .repository import SessionNotFoundError, SessionRepositoryError, validate_s
 class JsonFileSessionRepository:
     """Persist each ``SessionRecord`` as atomically replaced JSON."""
 
-    SCHEMA_VERSION = 1
+    SCHEMA_VERSION = 2
 
     def __init__(self, root_dir: str) -> None:
         if not isinstance(root_dir, str) or not root_dir.strip():
@@ -73,7 +83,7 @@ class JsonFileSessionRepository:
 
     def list(self) -> tuple[SessionRecord, ...]:
         with self._lock:
-            records = []
+            records: list[SessionRecord] = []
             for path in sorted(self.root.glob("*.json")):
                 try:
                     payload = json.loads(path.read_text(encoding="utf-8"))
@@ -90,22 +100,43 @@ class JsonFileSessionRepository:
     def _write(self, path: Path, record: SessionRecord) -> None:
         validate_session_record_integrity(record)
         payload = {"schema_version": self.SCHEMA_VERSION, "record": _json_safe(to_dict(record))}
-        temp = path.with_suffix(path.suffix + ".tmp")
+        temp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
         try:
-            temp.write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2), encoding="utf-8")
+            temp.write_text(
+                json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2),
+                encoding="utf-8",
+            )
+            with temp.open("r+b") as stream:
+                stream.flush()
+                os.fsync(stream.fileno())
             os.replace(temp, path)
+            try:
+                directory_fd = os.open(path.parent, os.O_DIRECTORY)
+                try:
+                    os.fsync(directory_fd)
+                finally:
+                    os.close(directory_fd)
+            except (AttributeError, OSError):
+                pass
         except OSError as exc:
             try:
                 temp.unlink(missing_ok=True)
             except OSError:
                 pass
-            raise SessionRepositoryError(f"failed to persist session {record.context.run_id}: {exc}") from exc
+            raise SessionRepositoryError(
+                f"failed to persist session {record.context.run_id}: {exc}"
+            ) from exc
 
     @classmethod
-    def _from_dict(cls, payload: dict[str, Any], *, expected_run_id: str | None = None) -> SessionRecord:
-        if not isinstance(payload, dict) or payload.get("schema_version") != cls.SCHEMA_VERSION:
+    def _from_dict(
+        cls,
+        payload: dict[str, Any],
+        *,
+        expected_run_id: str | None = None,
+    ) -> SessionRecord:
+        if not isinstance(payload, dict) or payload.get("schema_version") not in {1, cls.SCHEMA_VERSION}:
             raise SessionRepositoryError("unsupported or invalid session JSON schema")
-        raw = payload["record"]
+        raw = payload.get("record")
         if not isinstance(raw, dict):
             raise SessionRepositoryError("stored session record must be an object")
         context_raw = raw["context"]
@@ -125,20 +156,47 @@ class JsonFileSessionRepository:
             context=context,
             messages=[SessionMessage(**item) for item in raw.get("messages", [])],
             artifacts=[ArtifactRef(**item) for item in raw.get("artifacts", [])],
-            decisions=[HumanDecision(gate_id=item["gate_id"], run_id=item["run_id"], decision=HumanDecisionType(item["decision"]),
-                                     feedback=item["feedback"], timestamp=item["timestamp"], actor=item.get("actor", "human"))
-                       for item in raw.get("decisions", [])],
-            execution_results=[ExecutionResult(execution_id=item["execution_id"], status=ExecutionStatus(item["status"]),
-                                               exit_code=item.get("exit_code"), stdout=item["stdout"], stderr=item["stderr"],
-                                               duration_ms=item["duration_ms"],
-                                               artifacts=tuple(ArtifactRef(**artifact) for artifact in item.get("artifacts", [])),
-                                               backend=item.get("backend", "unknown"))
-                              for item in raw.get("execution_results", [])],
-            worker_outputs={key: WorkerOutput(**value) for key, value in raw.get("worker_outputs", {}).items()},
-            architecture_plan=_plan_from_dict(raw["architecture_plan"]) if raw.get("architecture_plan") else None,
-            final_result=_final_result_from_dict(raw["final_result"]) if raw.get("final_result") else None,
+            decisions=[
+                HumanDecision(
+                    gate_id=item["gate_id"],
+                    run_id=item["run_id"],
+                    decision=HumanDecisionType(item["decision"]),
+                    feedback=item["feedback"],
+                    timestamp=item["timestamp"],
+                    actor=item.get("actor", "human"),
+                )
+                for item in raw.get("decisions", [])
+            ],
+            execution_results=[
+                ExecutionResult(
+                    execution_id=item["execution_id"],
+                    status=ExecutionStatus(item["status"]),
+                    exit_code=item.get("exit_code"),
+                    stdout=item["stdout"],
+                    stderr=item["stderr"],
+                    duration_ms=item["duration_ms"],
+                    artifacts=tuple(
+                        ArtifactRef(**artifact) for artifact in item.get("artifacts", [])
+                    ),
+                    backend=item.get("backend", "unknown"),
+                    run_id=item.get("run_id"),
+                )
+                for item in raw.get("execution_results", [])
+            ],
+            worker_outputs={
+                key: WorkerOutput(**value)
+                for key, value in raw.get("worker_outputs", {}).items()
+            },
+            architecture_plan=_plan_from_dict(raw["architecture_plan"])
+            if raw.get("architecture_plan")
+            else None,
+            final_result=_final_result_from_dict(raw["final_result"])
+            if raw.get("final_result")
+            else None,
         )
-        record.approval_gates.extend(_approval_gate_from_dict(item) for item in raw.get("approval_gates", []))
+        record.approval_gates.extend(
+            _approval_gate_from_dict(item) for item in raw.get("approval_gates", [])
+        )
         return validate_session_record_integrity(record)
 
 
@@ -176,20 +234,36 @@ def _approval_gate_from_dict(raw: dict[str, Any]) -> ApprovalGate:
 
 def _plan_from_dict(raw: dict[str, Any]) -> ArchitecturePlan:
     return ArchitecturePlan(
-        plan_id=raw["plan_id"], objective=raw["objective"],
-        assumptions=tuple(raw.get("assumptions", [])), constraints=tuple(raw.get("constraints", [])),
-        acceptance_criteria=tuple(raw.get("acceptance_criteria", [])), risks=tuple(raw.get("risks", [])),
+        plan_id=raw["plan_id"],
+        objective=raw["objective"],
+        assumptions=tuple(raw.get("assumptions", [])),
+        constraints=tuple(raw.get("constraints", [])),
+        acceptance_criteria=tuple(raw.get("acceptance_criteria", [])),
+        risks=tuple(raw.get("risks", [])),
         required_capabilities=tuple(raw.get("required_capabilities", [])),
-        workers=tuple(WorkerSpec(worker_id=item["worker_id"], role=item["role"], mission=item["mission"],
-                                 deliverables=tuple(item.get("deliverables", [])), required_tools=tuple(item.get("required_tools", [])),
-                                 dependencies=tuple(item.get("dependencies", [])), can_request_human_input=item.get("can_request_human_input", True))
-                       for item in raw.get("workers", [])),
+        workers=tuple(
+            WorkerSpec(
+                worker_id=item["worker_id"],
+                role=item["role"],
+                mission=item["mission"],
+                deliverables=tuple(item.get("deliverables", [])),
+                required_tools=tuple(item.get("required_tools", [])),
+                dependencies=tuple(item.get("dependencies", [])),
+                can_request_human_input=item.get("can_request_human_input", True),
+            )
+            for item in raw.get("workers", [])
+        ),
     )
 
 
 def _final_result_from_dict(raw: dict[str, Any]) -> FinalResult:
     return FinalResult(
-        run_id=raw["run_id"], status=raw["status"], summary=raw["summary"],
-        deliverables=tuple(raw.get("deliverables", [])), tests=tuple(raw.get("tests", [])),
-        issues=tuple(raw.get("issues", [])), recommended_next_action=raw.get("recommended_next_action", ""),
+        run_id=raw["run_id"],
+        status=raw["status"],
+        summary=raw["summary"],
+        deliverables=tuple(raw.get("deliverables", [])),
+        tests=tuple(raw.get("tests", [])),
+        issues=tuple(raw.get("issues", [])),
+        recommended_next_action=raw.get("recommended_next_action", ""),
+        supervisor_evidence_hash=raw.get("supervisor_evidence_hash"),
     )
