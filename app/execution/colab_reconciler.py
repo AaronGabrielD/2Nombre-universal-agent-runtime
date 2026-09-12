@@ -149,6 +149,9 @@ def _result_from_payload(payload: dict[str, object], execution_id: str) -> Execu
     run_id = payload.get("run_id")
     if run_id is not None and (not isinstance(run_id, str) or not run_id.strip()):
         raise ColabReconcilerError("run_id must be a non-empty string or null")
+    worker_id = payload.get("worker_id")
+    if worker_id is not None and (not isinstance(worker_id, str) or not worker_id.strip()):
+        raise ColabReconcilerError("worker_id must be a non-empty string or null")
 
     return ExecutionResult(
         execution_id=execution_id,
@@ -160,6 +163,7 @@ def _result_from_payload(payload: dict[str, object], execution_id: str) -> Execu
         artifacts=tuple(artifacts),
         backend="colab",
         run_id=run_id,
+        worker_id=worker_id,
     )
 
 
