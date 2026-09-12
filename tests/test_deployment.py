@@ -24,6 +24,20 @@ class DeploymentTests(unittest.TestCase):
         compose = dict(render.files)["docker-compose.yml"]
         self.assertIn("${CHAINLIT_AUTH_SECRET}", compose)
         self.assertNotIn("super-secret", compose)
+        self.assertIn('"CMD", "python", "-c"', compose)
+        self.assertNotIn("CMD-SHELL", compose)
+
+    def test_health_path_does_not_require_shell_escaping(self):
+        spec = DeploymentSpec(
+            name="runtime",
+            command=("python", "-m", "app"),
+            port=8000,
+            health_path="/health?probe=$(touch /tmp/should-not-run)",
+        )
+        render = self.planner.render(self.adapter, spec)
+        compose = dict(render.files)["docker-compose.yml"]
+        self.assertIn("CMD-SHELL", compose) if False else self.assertIn("$(touch /tmp/should-not-run)", compose)
+        self.assertNotIn("CMD-SHELL", compose)
 
     def test_invalid_port_is_rejected(self):
         spec = DeploymentSpec(
