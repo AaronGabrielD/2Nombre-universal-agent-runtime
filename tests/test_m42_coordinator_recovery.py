@@ -96,7 +96,7 @@ class M42CoordinatorRecoveryTests(unittest.TestCase):
                 stdout="ok",
                 stderr="",
                 duration_ms=5,
-                backend="fake",
+                backend="colab",
             )
         )
         recovery = RecoveryResumeService(
