@@ -75,7 +75,6 @@ class ExecutionGateway:
                 if not verify_authorization_proof(secret, auth):
                     raise ExecutionGatewayError("execution authorization proof is invalid")
             elif auth.proof is not None:
-                # Test backend can exercise proof verification as well, but never accepts a malformed proof.
                 if not isinstance(auth.proof, str) or not hmac.compare_digest(auth.proof, auth.proof.strip()):
                     raise ExecutionGatewayError("invalid authorization proof")
         else:
@@ -83,27 +82,9 @@ class ExecutionGateway:
 
         backend = self._backends.get(selected_id)
         if backend is None:
-            return ExecutionResult(
-                execution_id=request.execution_id,
-                run_id=request.run_id,
-                status=ExecutionStatus.UNAVAILABLE,
-                exit_code=None,
-                stdout="",
-                stderr=f"execution backend is not registered: {selected_id}",
-                duration_ms=0,
-                backend=selected_id,
-            )
+            return self._unavailable(request, selected_id, "execution backend is not registered")
         if not backend.info.available:
-            return ExecutionResult(
-                execution_id=request.execution_id,
-                run_id=request.run_id,
-                status=ExecutionStatus.UNAVAILABLE,
-                exit_code=None,
-                stdout="",
-                stderr=f"execution backend is unavailable: {selected_id}",
-                duration_ms=0,
-                backend=selected_id,
-            )
+            return self._unavailable(request, selected_id, "execution backend is unavailable")
         started = monotonic()
         try:
             result = backend.execute(request)
@@ -111,6 +92,7 @@ class ExecutionGateway:
             return ExecutionResult(
                 execution_id=request.execution_id,
                 run_id=request.run_id,
+                worker_id=request.worker_id,
                 status=ExecutionStatus.TIMEOUT,
                 exit_code=None,
                 stdout="",
@@ -122,6 +104,7 @@ class ExecutionGateway:
             return ExecutionResult(
                 execution_id=request.execution_id,
                 run_id=request.run_id,
+                worker_id=request.worker_id,
                 status=ExecutionStatus.ERROR,
                 exit_code=None,
                 stdout="",
@@ -133,12 +116,15 @@ class ExecutionGateway:
             raise ExecutionGatewayError("backend returned an inconsistent execution_id")
         if result.run_id not in (None, request.run_id):
             raise ExecutionGatewayError("backend returned an inconsistent run_id")
+        if result.worker_id not in (None, request.worker_id):
+            raise ExecutionGatewayError("backend returned an inconsistent worker_id")
         if result.backend != selected_id:
             raise ExecutionGatewayError("backend returned inconsistent backend provenance")
-        if result.run_id is None:
+        if result.run_id is None or result.worker_id is None:
             result = ExecutionResult(
                 execution_id=result.execution_id,
                 run_id=request.run_id,
+                worker_id=request.worker_id,
                 status=result.status,
                 exit_code=result.exit_code,
                 stdout=result.stdout,
@@ -151,10 +137,25 @@ class ExecutionGateway:
         return result
 
     @staticmethod
+    def _unavailable(request: ExecutionRequest, backend_id: str, reason: str) -> ExecutionResult:
+        return ExecutionResult(
+            execution_id=request.execution_id,
+            run_id=request.run_id,
+            worker_id=request.worker_id,
+            status=ExecutionStatus.UNAVAILABLE,
+            exit_code=None,
+            stdout="",
+            stderr=f"{reason}: {backend_id}",
+            duration_ms=0,
+            backend=backend_id,
+        )
+
+    @staticmethod
     def _denied(request: ExecutionRequest, reason: str, backend_id: str) -> ExecutionResult:
         return ExecutionResult(
             execution_id=request.execution_id,
             run_id=request.run_id,
+            worker_id=request.worker_id,
             status=ExecutionStatus.DENIED,
             exit_code=None,
             stdout="",
