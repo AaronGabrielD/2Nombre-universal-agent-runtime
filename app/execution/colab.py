@@ -20,15 +20,7 @@ class ColabExecutionBackend(ExecutionBackend):
     MAX_RESPONSE_BYTES = 4 * 1024 * 1024
     MAX_ERROR_BYTES = 4096
 
-    def __init__(
-        self,
-        *,
-        base_url: str,
-        token: str | None = None,
-        timeout_seconds: int = 60,
-        execute_path: str = "/execute",
-        available: bool = True,
-    ) -> None:
+    def __init__(self, *, base_url: str, token: str | None = None, timeout_seconds: int = 60, execute_path: str = "/execute", available: bool = True) -> None:
         self._base_url = _normalize_base_url(base_url)
         self._token = token.strip() if token else None
         if timeout_seconds < 1:
@@ -41,11 +33,7 @@ class ColabExecutionBackend(ExecutionBackend):
 
     @property
     def info(self) -> ExecutionBackendInfo:
-        return ExecutionBackendInfo(
-            backend_id="colab",
-            name="Google Colab HTTP execution backend",
-            available=self._available,
-        )
+        return ExecutionBackendInfo("colab", "Google Colab HTTP execution backend", self._available)
 
     def execute(self, request: ExecutionRequest) -> ExecutionResult:
         request.validate(max_timeout_seconds=3600)
@@ -73,27 +61,18 @@ class ColabExecutionBackend(ExecutionBackend):
         started = monotonic()
         try:
             with urlopen(
-                Request(
-                    f"{self._base_url}{self._execute_path}",
-                    data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-                    headers=headers,
-                    method="POST",
-                ),
+                Request(f"{self._base_url}{self._execute_path}", data=json.dumps(payload, ensure_ascii=False).encode("utf-8"), headers=headers, method="POST"),
                 timeout=min(self._timeout_seconds, request.timeout_seconds),
             ) as response:
                 raw = _read_bounded(response, self.MAX_RESPONSE_BYTES)
         except HTTPError as exc:
-            raise ColabBackendError(
-                f"Colab service returned HTTP {exc.code}: "
-                f"{_read_error_body(exc, self.MAX_ERROR_BYTES) or exc.reason}"
-            ) from exc
+            raise ColabBackendError(f"Colab service returned HTTP {exc.code}: {_read_error_body(exc, self.MAX_ERROR_BYTES) or exc.reason}") from exc
         except TimeoutError as exc:
             raise TimeoutError("Colab execution request timed out") from exc
         except URLError as exc:
             raise ColabBackendError(f"Colab service connection failed: {exc.reason}") from exc
         except OSError as exc:
             raise ColabBackendError(f"Colab service I/O failed: {exc}") from exc
-
         try:
             decoded = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -113,13 +92,12 @@ def _normalize_base_url(base_url: str) -> str:
 def _read_bounded(stream, limit: int) -> bytes:
     if limit < 1:
         raise ValueError("limit must be positive")
-    try:
-        data = stream.read(limit + 1)
-    except TypeError:
-        data = stream.read()
+    data = stream.read(limit + 1)
+    if not isinstance(data, (bytes, bytearray)):
+        raise ColabBackendError("Colab response stream returned invalid bytes")
     if len(data) > limit:
         raise ColabBackendError("Colab response exceeds configured size limit")
-    return data
+    return bytes(data)
 
 
 def _read_error_body(exc: HTTPError, limit: int) -> str:
@@ -129,11 +107,7 @@ def _read_error_body(exc: HTTPError, limit: int) -> str:
         return ""
 
 
-def _result_from_payload(
-    payload: object,
-    request: ExecutionRequest,
-    elapsed_ms: int,
-) -> ExecutionResult:
+def _result_from_payload(payload: object, request: ExecutionRequest, elapsed_ms: int) -> ExecutionResult:
     if not isinstance(payload, dict):
         raise ColabBackendError("Colab response must be a JSON object")
     if payload.get("execution_id") != request.execution_id:
