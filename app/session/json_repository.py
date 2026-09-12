@@ -180,6 +180,7 @@ class JsonFileSessionRepository:
                     ),
                     backend=item.get("backend", "unknown"),
                     run_id=item.get("run_id"),
+                    worker_id=item.get("worker_id"),
                 )
                 for item in raw.get("execution_results", [])
             ],
