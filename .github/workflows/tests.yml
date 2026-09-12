@@ -33,4 +33,6 @@ jobs:
         run: python -c "import app.runtime.bootstrap, app.execution.colab_service, app.orchestration.service, app.supervisor.service"
 
       - name: Run tests
+        env:
+          UAR_EXECUTION_AUTH_SECRET: uar-ci-test-secret-do-not-use-in-production-2026
         run: python -m unittest discover -s tests -p 'test_*.py' -v
