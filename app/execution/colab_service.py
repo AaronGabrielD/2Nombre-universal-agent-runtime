@@ -269,7 +269,7 @@ class ColabExecutionRequestHandler(BaseHTTPRequestHandler):
         except ValueError:
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "not_found"})
             return
-        if not target.is_file():
+        if not target.is_file() or target.is_symlink():
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "not_found"})
             return
         size = target.stat().st_size
@@ -387,7 +387,7 @@ class ColabCodeExecutor:
         collected: list[dict[str, Any]] = []
         total_bytes = 0
         for path in sorted(workdir.rglob("*")):
-            if not path.is_file():
+            if path.is_symlink() or not path.is_file():
                 continue
             relative = path.relative_to(workdir)
             if relative == Path("main.py") or len(collected) >= self.config.max_artifacts:
@@ -401,7 +401,10 @@ class ColabCodeExecutor:
             except ValueError:
                 continue
             destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(path, destination)
+            shutil.copy2(path, destination, follow_symlinks=False)
+            if destination.is_symlink():
+                destination.unlink(missing_ok=True)
+                continue
             total_bytes += size
             collected.append({
                 "artifact_id": f"artifact-{uuid.uuid4().hex}",
@@ -430,28 +433,6 @@ class ColabCodeExecutor:
             "artifacts": artifacts or [],
             "backend": "colab",
         }
-
-
-class RuntimeColabHTTPServer(ThreadingHTTPServer):
-    """HTTP server carrying runtime configuration and executor state."""
-
-    daemon_threads = True
-
-    def __init__(self, address: tuple[str, int], config: ExecutionServiceConfig) -> None:
-        super().__init__(address, ColabExecutionRequestHandler)
-        self.runtime_config = config
-        self.execution_store = ExecutionStore(config.execution_db_path)
-        self.executor = ColabCodeExecutor(config, store=self.execution_store)
-
-
-def serve_forever(config: ExecutionServiceConfig | None = None) -> None:
-    runtime_config = config or ExecutionServiceConfig()
-    server = RuntimeColabHTTPServer((runtime_config.bind_host, runtime_config.port), runtime_config)
-    print(f"Universal Agent Runtime Colab service listening on {runtime_config.bind_host}:{runtime_config.port}")
-    try:
-        server.serve_forever()
-    finally:
-        server.server_close()
 
 
 def _request_fingerprint(request: dict[str, Any]) -> str:
