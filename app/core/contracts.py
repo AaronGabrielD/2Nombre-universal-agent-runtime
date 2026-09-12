@@ -204,11 +204,14 @@ class ExecutionResult:
     artifacts: tuple[ArtifactRef, ...] = ()
     backend: str = "unknown"
     run_id: str | None = None
+    worker_id: str | None = None
 
     def validate(self) -> None:
         require_non_empty_string("execution_id", self.execution_id)
         if self.run_id is not None:
             require_non_empty_string("run_id", self.run_id)
+        if self.worker_id is not None:
+            require_non_empty_string("worker_id", self.worker_id)
         if not isinstance(self.status, ExecutionStatus):
             try:
                 ExecutionStatus(self.status)
