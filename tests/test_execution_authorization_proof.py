@@ -5,8 +5,7 @@ import unittest
 from app.core.config import Settings
 from app.core.contracts import ExecutionRequest, ExecutionResult, ExecutionStatus
 from app.execution import ExecutionAuthorization, ExecutionBackend, ExecutionBackendInfo, ExecutionGateway
-from app.execution.models import compute_authorization_proof
-
+from app.execution.models import bind_authorization_to_request, compute_authorization_proof
 
 SECRET = "x" * 64
 
@@ -39,6 +38,7 @@ class Backend(ExecutionBackend):
         return ExecutionResult(
             execution_id=request.execution_id,
             run_id=request.run_id,
+            worker_id=request.worker_id,
             status=ExecutionStatus.SUCCESS,
             exit_code=0,
             stdout="ok",
@@ -49,67 +49,47 @@ class Backend(ExecutionBackend):
 
 
 class ExecutionAuthorizationProofTests(unittest.TestCase):
-    def _grant(self) -> ExecutionAuthorization:
+    def _base_grant(self) -> ExecutionAuthorization:
         unsigned = ExecutionAuthorization(
-            authorized=True,
-            reason="approved",
-            gate_id="gate-1",
-            run_id="run-1",
-            worker_id="worker-1",
-            backend_id="docker",
+            authorized=True, reason="approved", gate_id="gate-1", run_id="run-1", worker_id="worker-1", backend_id="docker"
         )
         return ExecutionAuthorization(
-            authorized=unsigned.authorized,
-            reason=unsigned.reason,
-            gate_id=unsigned.gate_id,
-            run_id=unsigned.run_id,
-            worker_id=unsigned.worker_id,
-            backend_id=unsigned.backend_id,
-            network_allowed=unsigned.network_allowed,
-            proof=compute_authorization_proof(SECRET, unsigned),
+            authorized=unsigned.authorized, reason=unsigned.reason, gate_id=unsigned.gate_id,
+            run_id=unsigned.run_id, worker_id=unsigned.worker_id, backend_id=unsigned.backend_id,
+            network_allowed=unsigned.network_allowed, proof=compute_authorization_proof(SECRET, unsigned)
         )
+
+    def _request(self, *, code: str = "print('ok')", timeout: int = 60) -> ExecutionRequest:
+        return ExecutionRequest("exec-1", "run-1", "worker-1", "python", code, timeout)
 
     def test_unsigned_authorization_is_rejected_in_production(self):
         gateway = ExecutionGateway(backends=(Backend(),), settings=settings())
-        authorization = self._grant()
-        forged = ExecutionAuthorization(
-            authorized=True,
-            reason=authorization.reason,
-            gate_id=authorization.gate_id,
-            run_id=authorization.run_id,
-            worker_id=authorization.worker_id,
-            backend_id=authorization.backend_id,
-        )
+        base = self._base_grant()
+        forged = ExecutionAuthorization(True, base.reason, base.gate_id, base.run_id, base.worker_id, base.backend_id)
         with self.assertRaisesRegex(RuntimeError, "authorization proof is invalid"):
-            gateway.execute(
-                ExecutionRequest("exec-1", "run-1", "worker-1", "python", "print('ok')"),
-                authorization=forged,
-            )
+            gateway.execute(self._request(), authorization=forged)
 
-    def test_tampering_with_scoped_fields_invalidates_proof(self):
+    def test_code_tampering_invalidates_request_proof(self):
         gateway = ExecutionGateway(backends=(Backend(),), settings=settings())
-        grant = self._grant()
-        tampered = ExecutionAuthorization(
-            authorized=True,
-            reason=grant.reason,
-            gate_id=grant.gate_id,
-            run_id=grant.run_id,
-            worker_id="worker-2",
-            backend_id=grant.backend_id,
-            network_allowed=grant.network_allowed,
-            proof=grant.proof,
-        )
-        with self.assertRaisesRegex(RuntimeError, "authorization proof is invalid"):
-            gateway.execute(
-                ExecutionRequest("exec-1", "run-1", "worker-2", "python", "print('ok')"),
-                authorization=tampered,
-            )
+        request = self._request()
+        grant = bind_authorization_to_request(SECRET, self._base_grant(), request)
+        tampered = ExecutionRequest("exec-1", "run-1", "worker-1", "python", "print('tampered')", 60)
+        with self.assertRaisesRegex(RuntimeError, "execution request authorization proof is invalid"):
+            gateway.execute(tampered, authorization=grant)
 
-    def test_valid_proof_is_accepted(self):
+    def test_timeout_tampering_invalidates_request_proof(self):
         gateway = ExecutionGateway(backends=(Backend(),), settings=settings())
+        request = self._request(timeout=30)
+        grant = bind_authorization_to_request(SECRET, self._base_grant(), request)
+        with self.assertRaisesRegex(RuntimeError, "execution request authorization proof is invalid"):
+            gateway.execute(self._request(timeout=60), authorization=grant)
+
+    def test_valid_request_bound_proof_is_accepted(self):
+        gateway = ExecutionGateway(backends=(Backend(),), settings=settings())
+        request = self._request()
         result = gateway.execute(
-            ExecutionRequest("exec-1", "run-1", "worker-1", "python", "print('ok')"),
-            authorization=self._grant(),
+            request,
+            authorization=bind_authorization_to_request(SECRET, self._base_grant(), request),
         )
         self.assertEqual(result.status, ExecutionStatus.SUCCESS)
 
