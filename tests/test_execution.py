@@ -56,6 +56,13 @@ class ExecutionGatewayTests(unittest.TestCase):
     def test_backend_error_is_normalized(self):
         backend = FakeBackend(mode="error"); gateway = ExecutionGateway(backends=(backend,), settings=settings())
         result = gateway.execute(request(), authorization=auth()); self.assertEqual(result.status, ExecutionStatus.ERROR); self.assertIn("backend exploded", result.stderr)
+    def test_authorization_cannot_override_runtime_backend_policy(self):
+        backend = FakeBackend()
+        configured = settings(execution_backend="docker", execution_authorization_secret="x" * 32)
+        gateway = ExecutionGateway(backends=(backend,), settings=configured)
+        with self.assertRaises(RuntimeError):
+            gateway.execute(request(), authorization=auth())
+        self.assertEqual(backend.calls, 0)
     def test_backend_must_return_matching_execution_id(self):
         class WrongIdBackend(FakeBackend):
             def execute(self, req):
