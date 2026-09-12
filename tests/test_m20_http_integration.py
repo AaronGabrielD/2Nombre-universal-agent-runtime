@@ -16,7 +16,9 @@ class M20HttpIntegrationTests(unittest.TestCase):
         self.backend=ColabExecutionBackend(base_url=self.base_url,token="integration-test-token",timeout_seconds=10)
     def tearDown(self):
         self.server.shutdown(); self.server.server_close(); self.thread.join(timeout=2); self._tmp.cleanup()
-        for k,v in self._old.items(): os.environ[k]=v if v is not None else os.environ.pop(k,None)
+        for key,value in self._old.items():
+            if value is None: os.environ.pop(key,None)
+            else: os.environ[key]=value
     def request(self,*,code="print('integration-ok')",needs_network=False,execution_id="exec-m20"):
         return ExecutionRequest(execution_id=execution_id,run_id="run-m20",worker_id="worker-m20",language="python",code=code,timeout_seconds=5,needs_network=needs_network,environment={})
     def test_authenticated_http_execution_round_trip(self):
@@ -27,7 +29,7 @@ class M20HttpIntegrationTests(unittest.TestCase):
     def test_network_policy_is_enforced_by_remote_service(self):
         result=self.backend.execute(self.request(needs_network=True,execution_id="exec-network")); self.assertEqual(result.status,ExecutionStatus.DENIED); self.assertIn("network execution is disabled",result.stderr)
     def test_artifact_is_returned_and_retrievable(self):
-        execution_id="exec-artifact"; code="from pathlib import Path; Path('artifact.txt').write_text('artifact-ok')"; result=self.backend.execute(self.request(code=code,execution_id=execution_id)); self.assertEqual(result.status,ExecutionStatus.SUCCESS); self.assertEqual(len(result.artifacts),1); artifact=result.artifacts[0]; self.assertEqual(artifact.name,"artifact.txt"); self.assertTrue(artifact.uri.startswith(f"artifact://{execution_id}/")); request=Request(f"{self.base_url}/artifacts/{execution_id}/{artifact.name}",headers={"Authorization":"Bearer integration-test-token"});
+        execution_id="exec-artifact"; code="from pathlib import Path; Path('artifact.txt').write_text('artifact-ok')"; result=self.backend.execute(self.request(code=code,execution_id=execution_id)); self.assertEqual(result.status,ExecutionStatus.SUCCESS); self.assertEqual(len(result.artifacts),1); artifact=result.artifacts[0]; self.assertEqual(artifact.name,"artifact.txt"); self.assertTrue(artifact.uri.startswith(f"artifact://{execution_id}/")); request=Request(f"{self.base_url}/artifacts/{execution_id}/{artifact.name}",headers={"Authorization":"Bearer integration-test-token"})
         with urlopen(request,timeout=5) as response: self.assertEqual(response.read(),b"artifact-ok")
 
 if __name__ == "__main__": unittest.main()
