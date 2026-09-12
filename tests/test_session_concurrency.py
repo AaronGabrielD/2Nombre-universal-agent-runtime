@@ -1,6 +1,7 @@
 """Regression tests for session concurrency control."""
 from __future__ import annotations
 
+from copy import deepcopy
 import pickle
 import sqlite3
 import tempfile
@@ -99,7 +100,7 @@ class SessionConcurrencyTests(unittest.TestCase):
         repository = InMemorySessionRepository()
         record = SessionRecord(context=RunContext())
         repository.create(record)
-        stale = repository.get(record.context.run_id)
+        stale = deepcopy(repository.get(record.context.run_id))
 
         record.context.metadata["writer"] = "first"
         repository.save(record)
