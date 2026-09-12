@@ -121,14 +121,17 @@ class ExecutionReconciliationService:
             raise ValueError("backend reconciliation returned an inconsistent execution_id")
         if result.run_id not in (None, local.run_id):
             raise ValueError("backend reconciliation returned cross-run evidence")
+        if result.worker_id not in (None, local.worker_id):
+            raise ValueError("backend reconciliation returned cross-worker evidence")
         if result.backend != "colab":
             raise ValueError("backend reconciliation returned untrusted backend provenance")
 
-        # Fill legacy results that predate run_id, but reject explicit cross-run evidence.
-        if result.run_id is None:
+        # Fill legacy results that predate run_id/worker_id, but reject explicit cross-run/cross-worker evidence.
+        if result.run_id is None or result.worker_id is None:
             result = ExecutionResult(
                 execution_id=result.execution_id,
                 run_id=local.run_id,
+                worker_id=local.worker_id,
                 status=result.status,
                 exit_code=result.exit_code,
                 stdout=result.stdout,
@@ -155,6 +158,8 @@ class ExecutionReconciliationService:
     def _from_result(owner, result: ExecutionResult) -> ExecutionReconciliation:
         if result.run_id not in (None, owner.run_id):
             raise ValueError("execution evidence belongs to another run")
+        if result.worker_id not in (None, owner.worker_id):
+            raise ValueError("execution evidence belongs to another worker")
         if result.status == ExecutionStatus.SUCCESS:
             status = ReconciliationStatus.COMPLETED
             detail = "Execution evidence confirms successful completion."
