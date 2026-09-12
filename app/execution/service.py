@@ -8,7 +8,12 @@ from typing import Iterable
 
 from app.core.config import Settings, get_settings
 from app.core.contracts import ExecutionRequest, ExecutionResult, ExecutionStatus
-from .models import ExecutionAuthorization, ExecutionBackendInfo, verify_authorization_proof
+from .models import (
+    ExecutionAuthorization,
+    ExecutionBackendInfo,
+    verify_authorization_proof,
+    verify_request_authorization_proof,
+)
 
 
 class ExecutionGatewayError(RuntimeError):
@@ -78,6 +83,8 @@ class ExecutionGateway:
                     raise ExecutionGatewayError(str(exc)) from exc
                 if not verify_authorization_proof(secret, auth):
                     raise ExecutionGatewayError("execution authorization proof is invalid")
+                if not verify_request_authorization_proof(secret, auth, request):
+                    raise ExecutionGatewayError("execution request authorization proof is invalid")
             elif auth.proof is not None:
                 if not isinstance(auth.proof, str) or not hmac.compare_digest(auth.proof, auth.proof.strip()):
                     raise ExecutionGatewayError("invalid authorization proof")
