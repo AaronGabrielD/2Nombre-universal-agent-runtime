@@ -7,9 +7,7 @@ import os
 import secrets
 import shutil
 import sqlite3
-import subprocess
 import sys
-import threading
 import uuid
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -19,6 +17,7 @@ from time import monotonic
 from typing import Any
 from urllib.parse import quote, unquote, urlparse
 
+from app.execution.bounded_process import BoundedProcessError, run_bounded_process
 from app.execution.policy import ExecutionPolicyError, PythonExecutionPolicy
 
 
@@ -337,19 +336,31 @@ class ColabCodeExecutor:
             script = workdir / "main.py"
             script.write_text(request["code"], encoding="utf-8")
             environment = _execution_environment(request["environment"], workdir)
-            completed = self._run_bounded_subprocess(
-                script=script,
-                workdir=workdir,
-                environment=environment,
-                timeout=timeout,
-            )
-            if completed["timed_out"]:
+            try:
+                completed = run_bounded_process(
+                    [sys.executable, str(script)],
+                    cwd=workdir,
+                    env=environment,
+                    timeout=timeout,
+                    max_output_bytes=self.config.max_output_bytes,
+                )
+            except BoundedProcessError as exc:
+                return self._result(
+                    execution_id=execution_id,
+                    run_id=request["run_id"],
+                    status="error",
+                    stdout="",
+                    stderr=str(exc),
+                    exit_code=None,
+                    duration_ms=_duration_ms(started),
+                )
+            if completed.timed_out:
                 return self._result(
                     execution_id=execution_id,
                     run_id=request["run_id"],
                     status="timeout",
-                    stdout=_bounded_text(completed["stdout"], self.config.max_output_bytes),
-                    stderr=_bounded_text(completed["stderr"], self.config.max_output_bytes)
+                    stdout=_bounded_text(completed.stdout, self.config.max_output_bytes),
+                    stderr=_bounded_text(completed.stderr, self.config.max_output_bytes)
                     or f"execution exceeded {timeout} seconds",
                     exit_code=None,
                     duration_ms=_duration_ms(started),
@@ -358,79 +369,13 @@ class ColabCodeExecutor:
         return self._result(
             execution_id=execution_id,
             run_id=request["run_id"],
-            status="success" if completed["returncode"] == 0 else "error",
-            stdout=_bounded_text(completed["stdout"], self.config.max_output_bytes),
-            stderr=_bounded_text(completed["stderr"], self.config.max_output_bytes),
-            exit_code=completed["returncode"],
+            status="success" if completed.returncode == 0 else "error",
+            stdout=_bounded_text(completed.stdout, self.config.max_output_bytes),
+            stderr=_bounded_text(completed.stderr, self.config.max_output_bytes),
+            exit_code=completed.returncode,
             duration_ms=_duration_ms(started),
             artifacts=artifacts,
         )
-
-    def _run_bounded_subprocess(
-        self,
-        *,
-        script: Path,
-        workdir: Path,
-        environment: dict[str, str],
-        timeout: int,
-    ) -> dict[str, Any]:
-        process = subprocess.Popen(
-            [sys.executable, str(script)],
-            cwd=str(workdir),
-            env=environment,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            shell=False,
-        )
-        stdout_holder: list[bytes] = [b""]
-        stderr_holder: list[bytes] = [b""]
-        stdout_error: list[BaseException] = []
-        stderr_error: list[BaseException] = []
-
-        stdout_thread = threading.Thread(
-            target=_drain_pipe_bounded,
-            args=(process.stdout, self.config.max_output_bytes, stdout_holder, stdout_error),
-            daemon=True,
-            name="uar-colab-stdout-reader",
-        )
-        stderr_thread = threading.Thread(
-            target=_drain_pipe_bounded,
-            args=(process.stderr, self.config.max_output_bytes, stderr_holder, stderr_error),
-            daemon=True,
-            name="uar-colab-stderr-reader",
-        )
-        stdout_thread.start()
-        stderr_thread.start()
-
-        timed_out = False
-        try:
-            try:
-                returncode = process.wait(timeout=timeout)
-            except subprocess.TimeoutExpired:
-                timed_out = True
-                process.kill()
-                returncode = process.wait()
-        finally:
-            stdout_thread.join()
-            stderr_thread.join()
-            if process.stdout is not None:
-                process.stdout.close()
-            if process.stderr is not None:
-                process.stderr.close()
-
-        if stdout_error or stderr_error:
-            error = (stdout_error + stderr_error)[0]
-            raise ColabExecutionServiceError(
-                f"failed to collect bounded subprocess output: {type(error).__name__}: {error}"
-            ) from error
-
-        return {
-            "returncode": returncode,
-            "timed_out": timed_out,
-            "stdout": stdout_holder[0],
-            "stderr": stderr_holder[0],
-        }
 
     def _validate_request(self, payload: dict[str, Any]) -> dict[str, Any]:
         required = ("execution_id", "run_id", "worker_id", "language", "code")
@@ -571,29 +516,6 @@ def _safe_environment_key(value: str) -> bool:
     if not value or not value.replace("_", "A").isalnum() or value[0].isdigit():
         return False
     return not any(marker in upper for marker in ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "PRIVATE"))
-
-
-def _drain_pipe_bounded(
-    stream,
-    limit: int,
-    holder: list[bytes],
-    errors: list[BaseException],
-) -> None:
-    try:
-        if stream is None:
-            holder[0] = b""
-            return
-        capture_limit = limit + 1
-        captured = bytearray()
-        while True:
-            chunk = stream.read(64 * 1024)
-            if not chunk:
-                break
-            if len(captured) < capture_limit:
-                captured.extend(chunk[: capture_limit - len(captured)])
-        holder[0] = bytes(captured)
-    except BaseException as exc:
-        errors.append(exc)
 
 
 def _bounded_text(value: str | bytes, limit: int) -> str:
