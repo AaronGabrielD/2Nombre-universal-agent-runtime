@@ -145,6 +145,7 @@ class ExecutionRequest:
     timeout_seconds: int = 60
     needs_network: bool = False
     environment: dict[str, str] = field(default_factory=dict)
+    idempotency_key: str | None = None
 
     def validate(self, *, max_timeout_seconds: int = 3600) -> None:
         require_non_empty_string("execution_id", self.execution_id)
@@ -152,6 +153,10 @@ class ExecutionRequest:
         require_non_empty_string("worker_id", self.worker_id)
         require_non_empty_string("language", self.language)
         require_non_empty_string("code", self.code)
+        if self.idempotency_key is not None:
+            require_non_empty_string("idempotency_key", self.idempotency_key)
+            if len(self.idempotency_key) > 256:
+                raise ContractValidationError("idempotency_key must be at most 256 characters")
         require_positive_integer("max_timeout_seconds", max_timeout_seconds)
         if isinstance(self.timeout_seconds, bool) or not isinstance(self.timeout_seconds, int):
             raise ContractValidationError("timeout_seconds must be an integer")
