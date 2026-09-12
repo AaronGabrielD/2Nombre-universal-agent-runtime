@@ -117,7 +117,7 @@ class DockerExecutionBackend(ExecutionBackend):
                     command,
                     cwd=root,
                     env={"PATH": shutil.which(self.docker_binary) or "", "HOME": "/tmp"},
-                    timeout=request.timeout_seconds + 5,
+                    timeout=request.timeout_seconds,
                     max_output_bytes=self.max_output_bytes,
                 )
             except BoundedProcessError as exc:
