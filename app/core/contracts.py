@@ -269,6 +269,7 @@ class FinalResult:
     tests: tuple[dict[str, Any], ...] = ()
     issues: tuple[str, ...] = ()
     recommended_next_action: str = ""
+    supervisor_evidence_hash: str | None = None
 
     def validate(self) -> None:
         require_non_empty_string("run_id", self.run_id)
@@ -281,6 +282,13 @@ class FinalResult:
         require_string_sequence("issues", self.issues)
         if not isinstance(self.recommended_next_action, str):
             raise ContractValidationError("recommended_next_action must be a string")
+        if self.supervisor_evidence_hash is not None:
+            if not isinstance(self.supervisor_evidence_hash, str) or len(self.supervisor_evidence_hash) != 64:
+                raise ContractValidationError("supervisor_evidence_hash must be a SHA-256 hex digest")
+            try:
+                int(self.supervisor_evidence_hash, 16)
+            except ValueError as exc:
+                raise ContractValidationError("supervisor_evidence_hash must be hexadecimal") from exc
         for name, values in (("deliverables", self.deliverables), ("tests", self.tests)):
             for index, item in enumerate(values):
                 if not isinstance(item, dict):
