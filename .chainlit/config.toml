@@ -1,0 +1,18 @@
+[features.spontaneous_file_upload]
+enabled = true
+accept = ["*/*"]
+max_files = 20
+max_size_mb = 50
+
+[features.audio]
+enabled = false
+
+[features.mcp]
+enabled = false
+
+[UI]
+name = "Universal Agent Runtime"
+unsafe_allow_html = false
+
+[meta]
+generated_by = "2.12.0"
