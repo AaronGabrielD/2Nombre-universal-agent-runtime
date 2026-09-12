@@ -26,8 +26,8 @@ class FakeBackend(ExecutionBackend):
             if self.concurrency is not None: self.concurrency.append(self._active)
         try:
             if self.delay: time.sleep(self.delay)
-            return ExecutionResult(execution_id=request.execution_id, run_id=request.run_id, status=ExecutionStatus.SUCCESS,
-                exit_code=0, stdout=request.code, stderr="", duration_ms=1, backend="test")
+            return ExecutionResult(execution_id=request.execution_id, run_id=request.run_id, worker_id=request.worker_id,
+                status=ExecutionStatus.SUCCESS, exit_code=0, stdout=request.code, stderr="", duration_ms=1, backend="test")
         finally:
             with self._lock: self._active -= 1
 
@@ -45,12 +45,23 @@ def auth(run_id, worker_id="*", backend="test"):
     return ExecutionAuthorization(True, gate_id="gate-c", run_id=run_id, worker_id=worker_id, backend_id=backend)
 
 
+def denied_auth(run_id, worker_id="worker-1", backend="test"):
+    return ExecutionAuthorization(
+        False,
+        "Gate C not approved",
+        gate_id="gate-c",
+        run_id=run_id,
+        worker_id=worker_id,
+        backend_id=backend,
+    )
+
+
 class WorkerRuntimeTests(unittest.TestCase):
     def make_adapter(self, sessions, backend=None):
         return WorkerRuntimeAdapter(gateway=ExecutionGateway(backends=(backend or FakeBackend(),), settings=test_settings()), session_manager=sessions)
     def test_denied_authorization_fails_closed_without_backend_execution(self):
         sessions=SessionManager(); context=sessions.create_session(); backend=FakeBackend(); adapter=self.make_adapter(sessions,backend)
-        result=adapter.execute_batch(batch=batch(context.run_id),tasks=(task(),),authorization=ExecutionAuthorization(False,"Gate C not approved"))
+        result=adapter.execute_batch(batch=batch(context.run_id),tasks=(task(),),authorization=denied_auth(context.run_id))
         self.assertEqual(result[0].status,ExecutionStatus.DENIED); self.assertEqual(backend.max_active,0); self.assertEqual(len(sessions.snapshot(context.run_id).execution_results),1)
     def test_authorized_task_is_sent_through_gateway_and_persisted(self):
         sessions=SessionManager(); context=sessions.create_session(); adapter=self.make_adapter(sessions)
