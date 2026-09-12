@@ -51,6 +51,17 @@ class RuntimeApplication:
     execution_gateway: ExecutionGateway
 
 
+def _env_int(name: str, default: int, *, minimum: int) -> int:
+    raw = os.getenv(name, str(default)).strip()
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be an integer") from exc
+    if value < minimum:
+        raise ValueError(f"{name} must be >= {minimum}")
+    return value
+
+
 def build_runtime(
     settings: Settings | None = None,
     *,
@@ -99,8 +110,20 @@ def build_runtime(
     if settings.execution_backend in {"docker", "test"} or not backends:
         backends.append(
             DockerExecutionBackend(
+                image=os.getenv("DOCKER_IMAGE", "python:3.12-alpine"),
                 allow_network=os.getenv("DOCKER_ALLOW_NETWORK", "false").strip().lower() == "true",
+                memory=os.getenv("DOCKER_MEMORY", "512m"),
+                cpus=os.getenv("DOCKER_CPUS", "1.0"),
+                pids_limit=_env_int("DOCKER_PIDS_LIMIT", 128, minimum=16),
+                max_output_bytes=_env_int("DOCKER_MAX_OUTPUT_BYTES", 256 * 1024, minimum=1024),
                 artifact_root=os.getenv("DOCKER_ARTIFACT_ROOT") or None,
+                max_artifacts=_env_int("DOCKER_MAX_ARTIFACTS", 20, minimum=1),
+                max_artifact_bytes=_env_int(
+                    "DOCKER_MAX_ARTIFACT_BYTES", 10 * 1024 * 1024, minimum=1
+                ),
+                max_total_artifact_bytes=_env_int(
+                    "DOCKER_MAX_TOTAL_ARTIFACT_BYTES", 32 * 1024 * 1024, minimum=1
+                ),
             )
         )
     gateway = ExecutionGateway(backends=tuple(backends), settings=settings)
