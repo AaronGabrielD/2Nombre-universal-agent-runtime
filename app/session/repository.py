@@ -26,6 +26,10 @@ class SessionRepositoryError(RuntimeErrorBase):
     """Raised when persistent session storage cannot be read or written."""
 
 
+class SessionRepositoryConflictError(SessionRepositoryError):
+    """Raised when a session was modified after the caller read it."""
+
+
 class SessionRepository(Protocol):
     def create(self, record: SessionRecord) -> SessionRecord: ...
     def get(self, run_id: str) -> SessionRecord: ...
@@ -39,6 +43,9 @@ def validate_session_record_integrity(record: SessionRecord) -> SessionRecord:
     """Validate persisted session structure before exposing it to the runtime."""
     if not isinstance(record, SessionRecord):
         raise SessionRepositoryError("stored session has an invalid record type")
+
+    if not isinstance(record.revision, int) or isinstance(record.revision, bool) or record.revision < 0:
+        raise SessionRepositoryError("stored session has an invalid revision")
 
     run_id = record.context.run_id
     if not isinstance(run_id, str) or not run_id.strip():
@@ -136,6 +143,8 @@ class InMemorySessionRepository:
         run_id = record.context.run_id
         if not run_id.strip():
             raise ValueError("run_id cannot be empty")
+        if record.revision != 0:
+            raise ValueError("new sessions must start at revision 0")
         with self._lock:
             if run_id in self._sessions:
                 raise ValueError(f"run_id already exists: {run_id}")
@@ -152,8 +161,15 @@ class InMemorySessionRepository:
     def save(self, record: SessionRecord) -> SessionRecord:
         run_id = record.context.run_id
         with self._lock:
-            if run_id not in self._sessions:
-                raise SessionNotFoundError(f"Unknown run_id: {run_id}")
+            try:
+                current = self._sessions[run_id]
+            except KeyError as exc:
+                raise SessionNotFoundError(f"Unknown run_id: {run_id}") from exc
+            if record.revision != current.revision:
+                raise SessionRepositoryConflictError(
+                    f"session {run_id} revision conflict: expected {record.revision}, current {current.revision}"
+                )
+            record.revision += 1
             self._sessions[run_id] = record
             return record
 
@@ -191,10 +207,16 @@ class SQLiteSessionRepository:
                     """
                     CREATE TABLE IF NOT EXISTS sessions (
                         run_id TEXT PRIMARY KEY,
-                        payload BLOB NOT NULL
+                        payload BLOB NOT NULL,
+                        revision INTEGER NOT NULL DEFAULT 0
                     )
                     """
                 )
+                columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(sessions)").fetchall()}
+                if "revision" not in columns:
+                    connection.execute(
+                        "ALTER TABLE sessions ADD COLUMN revision INTEGER NOT NULL DEFAULT 0"
+                    )
         except sqlite3.Error as exc:
             raise SessionRepositoryError(f"failed to initialize SQLite repository: {exc}") from exc
 
@@ -202,13 +224,15 @@ class SQLiteSessionRepository:
         run_id = record.context.run_id
         if not run_id.strip():
             raise ValueError("run_id cannot be empty")
+        if record.revision != 0:
+            raise ValueError("new sessions must start at revision 0")
         payload = sqlite3.Binary(pickle.dumps(record, protocol=pickle.HIGHEST_PROTOCOL))
         with self._lock:
             try:
                 with sqlite3.connect(self._database_path) as connection:
                     connection.execute(
-                        "INSERT INTO sessions(run_id, payload) VALUES (?, ?)",
-                        (run_id, payload),
+                        "INSERT INTO sessions(run_id, payload, revision) VALUES (?, ?, ?)",
+                        (run_id, payload, record.revision),
                     )
             except sqlite3.IntegrityError as exc:
                 raise ValueError(f"run_id already exists: {run_id}") from exc
@@ -221,33 +245,51 @@ class SQLiteSessionRepository:
             try:
                 with sqlite3.connect(self._database_path) as connection:
                     row = connection.execute(
-                        "SELECT payload FROM sessions WHERE run_id = ?",
+                        "SELECT revision, payload FROM sessions WHERE run_id = ?",
                         (run_id,),
                     ).fetchone()
             except sqlite3.Error as exc:
                 raise SessionRepositoryError(f"failed to read session {run_id}: {exc}") from exc
         if row is None:
             raise SessionNotFoundError(f"Unknown run_id: {run_id}")
-        return self._decode(run_id, row[0])
+        return self._decode(run_id, int(row[0]), row[1])
 
     def save(self, record: SessionRecord) -> SessionRecord:
         run_id = record.context.run_id
         if not run_id.strip():
             raise ValueError("run_id cannot be empty")
-        payload = sqlite3.Binary(pickle.dumps(record, protocol=pickle.HIGHEST_PROTOCOL))
+        if not isinstance(record.revision, int) or isinstance(record.revision, bool) or record.revision < 0:
+            raise ValueError("record.revision must be a non-negative integer")
+        expected_revision = record.revision
+        stored_record = deepcopy(record)
+        stored_record.revision = expected_revision + 1
+        payload = sqlite3.Binary(pickle.dumps(stored_record, protocol=pickle.HIGHEST_PROTOCOL))
         with self._lock:
             try:
                 with sqlite3.connect(self._database_path) as connection:
                     cursor = connection.execute(
-                        "UPDATE sessions SET payload = ? WHERE run_id = ?",
-                        (payload, run_id),
+                        """
+                        UPDATE sessions
+                        SET payload = ?, revision = ?
+                        WHERE run_id = ? AND revision = ?
+                        """,
+                        (payload, stored_record.revision, run_id, expected_revision),
                     )
                     if cursor.rowcount != 1:
-                        raise SessionNotFoundError(f"Unknown run_id: {run_id}")
-            except SessionNotFoundError:
+                        current = connection.execute(
+                            "SELECT revision FROM sessions WHERE run_id = ?",
+                            (run_id,),
+                        ).fetchone()
+                        if current is None:
+                            raise SessionNotFoundError(f"Unknown run_id: {run_id}")
+                        raise SessionRepositoryConflictError(
+                            f"session {run_id} revision conflict: expected {expected_revision}, current {int(current[0])}"
+                        )
+            except (SessionNotFoundError, SessionRepositoryConflictError):
                 raise
             except sqlite3.Error as exc:
                 raise SessionRepositoryError(f"failed to save session {run_id}: {exc}") from exc
+        record.revision = stored_record.revision
         return record
 
     def delete(self, run_id: str) -> None:
@@ -279,20 +321,22 @@ class SQLiteSessionRepository:
             try:
                 with sqlite3.connect(self._database_path) as connection:
                     rows = connection.execute(
-                        "SELECT run_id, payload FROM sessions ORDER BY run_id"
+                        "SELECT run_id, revision, payload FROM sessions ORDER BY run_id"
                     ).fetchall()
             except sqlite3.Error as exc:
                 raise SessionRepositoryError(f"failed to list sessions: {exc}") from exc
-        return tuple(self._decode(str(run_id), payload) for run_id, payload in rows)
+        return tuple(self._decode(str(run_id), int(revision), payload) for run_id, revision, payload in rows)
 
     @staticmethod
-    def _decode(run_id: str, payload: bytes) -> SessionRecord:
+    def _decode(run_id: str, revision: int, payload: bytes) -> SessionRecord:
         try:
             record = pickle.loads(payload)
         except (pickle.PickleError, EOFError, AttributeError, ValueError, TypeError) as exc:
             raise SessionRepositoryError(f"stored session {run_id} is corrupt") from exc
         if not isinstance(record, SessionRecord):
             raise SessionRepositoryError(f"stored session {run_id} has an invalid record type")
+        if record.revision != revision:
+            raise SessionRepositoryError(f"stored session {run_id} has mismatched revision metadata")
         try:
             return validate_session_record_integrity(record)
         except SessionRepositoryError as exc:

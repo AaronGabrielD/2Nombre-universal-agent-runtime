@@ -53,9 +53,10 @@ class SessionRecord:
     approval_gates: list[ApprovalGate] = field(default_factory=list)
     architecture_plan: ArchitecturePlan | None = None
     final_result: FinalResult | None = None
+    revision: int = 0
 
     def __setstate__(self, state: object) -> None:
-        """Backfill the gate collection when loading pre-gate-persistence pickles."""
+        """Backfill fields when loading older SessionRecord pickles."""
         if isinstance(state, tuple) and len(state) == 2 and isinstance(state[1], dict):
             state = state[1]
         if not isinstance(state, dict):
@@ -64,3 +65,5 @@ class SessionRecord:
             object.__setattr__(self, field_name, value)
         if not hasattr(self, "approval_gates"):
             object.__setattr__(self, "approval_gates", [])
+        if not hasattr(self, "revision"):
+            object.__setattr__(self, "revision", 0)
