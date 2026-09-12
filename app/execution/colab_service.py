@@ -130,14 +130,20 @@ class ExecutionStore:
             if updated != 1:
                 raise ColabExecutionServiceError("execution completion record was not writable")
 
-    def get(self, execution_id: str) -> dict[str, Any] | None:
+    def get(self, *, execution_id: str, idempotency_key: str) -> dict[str, Any] | None:
         with sqlite3.connect(self.path) as connection:
             row = connection.execute(
-                "SELECT status,result_json FROM executions WHERE execution_id = ?", (execution_id,)
+                "SELECT idempotency_key,status,result_json FROM executions WHERE execution_id = ?",
+                (execution_id,),
             ).fetchone()
-        if row is None or row[0] != "completed" or not row[1]:
+        if row is None:
             return None
-        payload = json.loads(row[1])
+        stored_key, status, result_json = row
+        if stored_key != idempotency_key:
+            raise ExecutionConflictError("execution idempotency key does not match stored authority")
+        if status != "completed" or not result_json:
+            return None
+        payload = json.loads(result_json)
         return payload if isinstance(payload, dict) else None
 
 
@@ -229,7 +235,15 @@ class ColabExecutionRequestHandler(BaseHTTPRequestHandler):
         if not _safe_identifier(execution_id):
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "not_found"})
             return
-        result = self.store.get(execution_id)
+        idempotency_key = self.headers.get("X-Idempotency-Key", "").strip()
+        if not idempotency_key:
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "X-Idempotency-Key is required"})
+            return
+        try:
+            result = self.store.get(execution_id=execution_id, idempotency_key=idempotency_key)
+        except ExecutionConflictError:
+            self._send_json(HTTPStatus.CONFLICT, {"error": "idempotency key mismatch"})
+            return
         if result is None:
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "not_found"})
             return
@@ -330,20 +344,9 @@ class ColabCodeExecutor:
                     timeout=timeout, check=False,
                 )
             except subprocess.TimeoutExpired as exc:
-                return self._result(
-                    execution_id=execution_id, run_id=request["run_id"], status="timeout",
-                    stdout=_bounded_text(exc.stdout or "", self.config.max_output_bytes),
-                    stderr=_bounded_text(exc.stderr or "", self.config.max_output_bytes) or f"execution exceeded {timeout} seconds",
-                    exit_code=None, duration_ms=_duration_ms(started),
-                )
+                return self._result(execution_id=execution_id, run_id=request["run_id"], status="timeout", stdout=_bounded_text(exc.stdout or "", self.config.max_output_bytes), stderr=_bounded_text(exc.stderr or "", self.config.max_output_bytes) or f"execution exceeded {timeout} seconds", exit_code=None, duration_ms=_duration_ms(started))
             artifacts = self._collect_artifacts(workdir, execution_root, execution_id)
-        return self._result(
-            execution_id=execution_id, run_id=request["run_id"],
-            status="success" if completed.returncode == 0 else "error",
-            stdout=_bounded_text(completed.stdout, self.config.max_output_bytes),
-            stderr=_bounded_text(completed.stderr, self.config.max_output_bytes),
-            exit_code=completed.returncode, duration_ms=_duration_ms(started), artifacts=artifacts,
-        )
+        return self._result(execution_id=execution_id, run_id=request["run_id"], status="success" if completed.returncode == 0 else "error", stdout=_bounded_text(completed.stdout, self.config.max_output_bytes), stderr=_bounded_text(completed.stderr, self.config.max_output_bytes), exit_code=completed.returncode, duration_ms=_duration_ms(started), artifacts=artifacts)
 
     def _validate_request(self, payload: dict[str, Any]) -> dict[str, Any]:
         required = ("execution_id", "run_id", "worker_id", "language", "code")
@@ -453,9 +456,12 @@ def serve_forever(config: ExecutionServiceConfig | None = None) -> None:
 
 def _request_fingerprint(request: dict[str, Any]) -> str:
     material = {
-        "run_id": request["run_id"], "worker_id": request["worker_id"],
-        "language": request["language"], "code": request["code"],
-        "timeout_seconds": request["timeout_seconds"], "needs_network": request["needs_network"],
+        "run_id": request["run_id"],
+        "worker_id": request["worker_id"],
+        "language": request["language"],
+        "code": request["code"],
+        "timeout_seconds": request["timeout_seconds"],
+        "needs_network": request["needs_network"],
         "environment": dict(sorted(request["environment"].items())),
     }
     return hashlib.sha256(json.dumps(material, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
