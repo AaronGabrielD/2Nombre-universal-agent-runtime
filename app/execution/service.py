@@ -65,6 +65,10 @@ class ExecutionGateway:
                 raise ExecutionGatewayError("authorization scope does not match execution request")
             if auth.backend_id != selected_id:
                 raise ExecutionGatewayError("authorization does not permit the selected backend")
+            if selected_id != self._settings.execution_backend:
+                raise ExecutionGatewayError(
+                    "authorization requests a backend not permitted by runtime configuration"
+                )
             if request.needs_network and not auth.network_allowed:
                 return self._denied(request, "network access is not authorized", selected_id)
             if self._settings.execution_backend != "test":
