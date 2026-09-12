@@ -583,13 +583,14 @@ def _drain_pipe_bounded(
         if stream is None:
             holder[0] = b""
             return
+        capture_limit = limit + 1
         captured = bytearray()
         while True:
             chunk = stream.read(64 * 1024)
             if not chunk:
                 break
-            if len(captured) < limit:
-                captured.extend(chunk[: limit - len(captured)])
+            if len(captured) < capture_limit:
+                captured.extend(chunk[: capture_limit - len(captured)])
         holder[0] = bytes(captured)
     except BaseException as exc:
         errors.append(exc)
