@@ -22,6 +22,7 @@ class ColabServiceTests(unittest.TestCase):
                 "RUNTIME_EXECUTION_TOKEN": "test-token",
                 "RUNTIME_ARTIFACT_ROOT": root,
                 "RUNTIME_ALLOW_NETWORK": "false",
+                "RUNTIME_MAX_OUTPUT_BYTES": "1024",
             },
             clear=False,
         ):
@@ -103,6 +104,41 @@ class ColabServiceTests(unittest.TestCase):
                 }
             )
             self.assertEqual(result["status"], "unavailable")
+
+    def test_subprocess_output_is_bounded_before_return(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            executor = ColabCodeExecutor(self._config(tmp))
+            result = executor.execute(
+                {
+                    "execution_id": "exec-output-limit",
+                    "run_id": "run-1",
+                    "worker_id": "worker-1",
+                    "language": "python",
+                    "code": "print('x' * 10000000)",
+                    "idempotency_key": "key-output-limit",
+                }
+            )
+            self.assertEqual(result["status"], "success")
+            self.assertLessEqual(len(result["stdout"].encode("utf-8")), 1024)
+            self.assertIn("output truncated by execution service", result["stdout"])
+
+    def test_timeout_with_continuous_output_does_not_deadlock(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            executor = ColabCodeExecutor(self._config(tmp))
+            result = executor.execute(
+                {
+                    "execution_id": "exec-output-timeout",
+                    "run_id": "run-1",
+                    "worker_id": "worker-1",
+                    "language": "python",
+                    "code": "import time\nwhile True:\n    print('x' * 4096)\n    time.sleep(0.001)",
+                    "idempotency_key": "key-output-timeout",
+                    "timeout_seconds": 1,
+                }
+            )
+            self.assertEqual(result["status"], "timeout")
+            self.assertLessEqual(len(result["stdout"].encode("utf-8")), 1024)
+            self.assertIn("output truncated by execution service", result["stdout"])
 
     def test_server_uses_shared_durable_execution_store(self):
         with tempfile.TemporaryDirectory() as tmp:
