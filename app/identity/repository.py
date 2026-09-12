@@ -38,8 +38,15 @@ class InMemoryUserRepository:
     def create(self, user: UserRecord) -> UserRecord:
         user.validate()
         username = _normalize_username(user.username)
-        stored = deepcopy(user)
-        stored.username = username if hasattr(stored, "__dict__") else stored.username
+        stored = UserRecord(
+            user_id=user.user_id,
+            username=username,
+            password_hash=user.password_hash,
+            role=user.role,
+            enabled=user.enabled,
+            created_at=user.created_at,
+            updated_at=user.updated_at,
+        )
         with self._lock:
             if user.user_id in self._users:
                 raise ValueError(f"user_id already exists: {user.user_id}")
