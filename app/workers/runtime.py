@@ -52,6 +52,8 @@ class WorkerExecutionTask:
 
 
 class WorkerRuntimeAdapter:
+    """Execute run-scoped worker tasks through the central execution gateway."""
+
     def __init__(
         self,
         *,
@@ -118,8 +120,9 @@ class WorkerRuntimeAdapter:
         authorization_by_worker: Mapping[str, ExecutionAuthorization] | None,
     ) -> dict[str, ExecutionAuthorization]:
         result: dict[str, ExecutionAuthorization] = {}
+        worker_ids = {item.task.worker_id for item in tasks}
         if authorization_by_worker is not None:
-            if set(authorization_by_worker) != {item.task.worker_id for item in tasks}:
+            if set(authorization_by_worker) != worker_ids:
                 raise WorkerRuntimeError(
                     "authorization_by_worker must contain exactly one grant per task worker"
                 )
@@ -135,11 +138,17 @@ class WorkerRuntimeAdapter:
                     raise WorkerRuntimeError("authorization run_id does not match batch")
                 result[item.task.worker_id] = grant
             return result
+
         if authorization is None:
             raise WorkerRuntimeError("an explicit execution authorization is required")
         if not authorization.authorized or authorization.run_id != batch.run_id:
             raise WorkerRuntimeError("execution authorization does not match batch")
-        if authorization.worker_id not in {"*", *{item.task.worker_id for item in tasks}}:
+        if authorization.worker_id == "*":
+            if self.settings.execution_backend != "test":
+                raise WorkerRuntimeError(
+                    "wildcard worker authorization is forbidden outside test mode"
+                )
+        elif authorization.worker_id not in worker_ids:
             raise WorkerRuntimeError("execution authorization does not match any task worker")
         for item in tasks:
             if authorization.worker_id not in {"*", item.task.worker_id}:
