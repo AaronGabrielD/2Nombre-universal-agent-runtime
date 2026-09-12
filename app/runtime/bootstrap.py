@@ -13,6 +13,7 @@ from app.agents.crewai_adapter import CrewAIWorkerAdapter
 from app.approval.service import HumanApprovalEngine
 from app.architect.service import UniversalArchitect
 from app.core.config import Settings, get_settings
+from app.core.contracts import ExecutionRequest, ExecutionResult, ExecutionStatus
 from app.execution import (
     ColabExecutionBackend,
     ColabExecutionReconciler,
@@ -20,6 +21,8 @@ from app.execution import (
     ExecutionGateway,
     ExecutionReconciliationService,
 )
+from app.execution.models import ExecutionBackendInfo
+from app.execution.service import ExecutionBackend
 from app.identity import IdentityService, RunAuthorizationService, SQLiteUserRepository
 from app.intake.service import IntakeService
 from app.llm.gemini import GeminiAdapter
@@ -49,6 +52,31 @@ class RuntimeApplication:
     tool_registry: ToolRegistry
     tool_authorization: ToolAuthorizationService
     execution_gateway: ExecutionGateway
+
+
+class _UnavailableTestExecutionBackend(ExecutionBackend):
+    """Non-executing backend used only to make test-mode composition explicit."""
+
+    @property
+    def info(self) -> ExecutionBackendInfo:
+        return ExecutionBackendInfo(
+            backend_id="test",
+            name="Test backend (execution unavailable)",
+            available=False,
+        )
+
+    def execute(self, request: ExecutionRequest) -> ExecutionResult:
+        return ExecutionResult(
+            execution_id=request.execution_id,
+            run_id=request.run_id,
+            worker_id=request.worker_id,
+            status=ExecutionStatus.UNAVAILABLE,
+            exit_code=None,
+            stdout="",
+            stderr="test execution backend is intentionally unavailable",
+            duration_ms=0,
+            backend="test",
+        )
 
 
 def _env_int(name: str, default: int, *, minimum: int) -> int:
@@ -107,7 +135,9 @@ def build_runtime(
                 timeout_seconds=settings.default_execution_timeout_seconds,
             )
         )
-    if settings.execution_backend in {"docker", "test"} or not backends:
+    if settings.execution_backend == "test":
+        backends.append(_UnavailableTestExecutionBackend())
+    elif settings.execution_backend == "docker" or not backends:
         backends.append(
             DockerExecutionBackend(
                 image=os.getenv("DOCKER_IMAGE", "python:3.12-alpine"),
