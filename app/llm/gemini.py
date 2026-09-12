@@ -55,13 +55,7 @@ class GeminiAdapter:
         last_error: Exception | None = None
         for attempt in range(self._MAX_ATTEMPTS):
             try:
-                config_kwargs: dict[str, Any] = {}
-                if request.system_instruction:
-                    config_kwargs["system_instruction"] = request.system_instruction
-                if request.temperature is not None:
-                    config_kwargs["temperature"] = request.temperature
-                if request.max_output_tokens is not None:
-                    config_kwargs["max_output_tokens"] = request.max_output_tokens
+                config_kwargs = self._build_config_kwargs(request)
 
                 config: Any | None = None
                 if config_kwargs:
@@ -83,6 +77,25 @@ class GeminiAdapter:
         raise GeminiAdapterError(
             f"Gemini generation failed after {self._MAX_ATTEMPTS} attempts: {last_error}"
         ) from last_error
+
+    @classmethod
+    def _build_config_kwargs(cls, request: GenerationRequest) -> dict[str, Any]:
+        config_kwargs: dict[str, Any] = {}
+        if request.system_instruction:
+            config_kwargs["system_instruction"] = request.system_instruction
+        # Gemini 3.x no longer recommends the sampling controls. Keep the
+        # provider-neutral field in GenerationRequest for other LLMs, but do
+        # not transmit it to Gemini 3.x models.
+        if request.temperature is not None and not cls._is_gemini_3_model(request.model):
+            config_kwargs["temperature"] = request.temperature
+        if request.max_output_tokens is not None:
+            config_kwargs["max_output_tokens"] = request.max_output_tokens
+        return config_kwargs
+
+    @staticmethod
+    def _is_gemini_3_model(model: str) -> bool:
+        normalized = model.strip().lower()
+        return normalized.startswith("gemini-3.") or normalized.startswith("gemini-3-")
 
     def _normalize_response(
         self, request: GenerationRequest, response: Any
