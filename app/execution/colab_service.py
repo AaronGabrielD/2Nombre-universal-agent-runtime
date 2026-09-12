@@ -30,7 +30,7 @@ class ExecutionInProgressError(ColabExecutionServiceError):
 
 
 class ExecutionConflictError(ColabExecutionServiceError):
-    """Raised when an idempotency key is reused for different work."""
+    """Raised when an execution identity is reused for different work."""
 
 
 class ExecutionServiceConfig:
@@ -62,8 +62,7 @@ class ExecutionServiceConfig:
             raise ColabExecutionServiceError("RUNTIME_PYTHON_POLICY must be 'restricted' or 'unsafe'")
         if not self.token:
             raise ColabExecutionServiceError("RUNTIME_EXECUTION_TOKEN must be configured")
-        if self.execution_db_path.parent != self.artifact_root:
-            self.execution_db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.execution_db_path.parent.mkdir(parents=True, exist_ok=True)
         self.artifact_root.mkdir(parents=True, exist_ok=True)
 
 
@@ -87,7 +86,13 @@ class ExecutionStore:
                 """
             )
 
-    def reserve(self, *, execution_id: str, idempotency_key: str, request_fingerprint: str) -> dict[str, Any] | None:
+    def reserve(
+        self,
+        *,
+        execution_id: str,
+        idempotency_key: str,
+        request_fingerprint: str,
+    ) -> dict[str, Any] | None:
         with sqlite3.connect(self.path) as connection:
             try:
                 connection.execute(
@@ -96,18 +101,24 @@ class ExecutionStore:
                 )
                 return None
             except sqlite3.IntegrityError:
-                row = connection.execute(
+                rows = connection.execute(
                     "SELECT execution_id,idempotency_key,request_fingerprint,status,result_json FROM executions WHERE execution_id = ? OR idempotency_key = ?",
                     (execution_id, idempotency_key),
-                ).fetchone()
-                if row is None:
-                    raise ColabExecutionServiceError("execution reservation conflict")
-                if row[2] != request_fingerprint:
-                    raise ExecutionConflictError("execution idempotency key was reused for different work")
-                if row[3] == "running":
-                    raise ExecutionInProgressError("execution is already in progress")
-                if row[3] == "completed" and row[4]:
-                    return json.loads(row[4])
+                ).fetchall()
+                for row in rows:
+                    existing_execution_id, existing_key, existing_fingerprint, status, result_json = row
+                    if (
+                        existing_execution_id != execution_id
+                        or existing_key != idempotency_key
+                        or existing_fingerprint != request_fingerprint
+                    ):
+                        raise ExecutionConflictError("execution identity was reused for different work")
+                    if status == "running":
+                        raise ExecutionInProgressError("execution is already in progress")
+                    if status == "completed" and result_json:
+                        payload = json.loads(result_json)
+                        if isinstance(payload, dict):
+                            return payload
                 raise ColabExecutionServiceError("stored execution record is invalid")
 
     def complete(self, *, execution_id: str, result: dict[str, Any]) -> None:
@@ -167,10 +178,7 @@ class ColabExecutionRequestHandler(BaseHTTPRequestHandler):
         try:
             payload = self._read_json()
             response = self.server.executor.execute(payload)  # type: ignore[attr-defined]
-        except ExecutionInProgressError as exc:
-            self._send_json(HTTPStatus.CONFLICT, {"error": str(exc)})
-            return
-        except ExecutionConflictError as exc:
+        except (ExecutionInProgressError, ExecutionConflictError) as exc:
             self._send_json(HTTPStatus.CONFLICT, {"error": str(exc)})
             return
         except ColabExecutionServiceError as exc:
@@ -256,6 +264,7 @@ class ColabExecutionRequestHandler(BaseHTTPRequestHandler):
             return
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(size))
         self.end_headers()
         with target.open("rb") as stream:
@@ -290,55 +299,22 @@ class ColabCodeExecutor:
         )
         if existing is not None:
             return existing
-
-        started = monotonic()
-        try:
-            result = self._execute_reserved(request, started)
-        except Exception:
-            # Keep the durable row as RUNNING. A recovery caller can discover that execution
-            # was interrupted and must query/reconcile instead of blindly replaying it.
-            raise
+        result = self._execute_reserved(request, monotonic())
         self.store.complete(execution_id=execution_id, result=result)
         return result
 
     def _execute_reserved(self, request: dict[str, Any], started: float) -> dict[str, Any]:
         execution_id = request["execution_id"]
         timeout = request["timeout_seconds"]
-
         if request["needs_network"] and not self.config.allow_network_requests:
-            return self._result(
-                execution_id=execution_id,
-                run_id=request["run_id"],
-                status="denied",
-                stdout="",
-                stderr="network execution is disabled by service policy",
-                exit_code=None,
-                duration_ms=_duration_ms(started),
-            )
+            return self._result(execution_id=execution_id, run_id=request["run_id"], status="denied", stdout="", stderr="network execution is disabled by service policy", exit_code=None, duration_ms=_duration_ms(started))
         if request["language"] != "python":
-            return self._result(
-                execution_id=execution_id,
-                run_id=request["run_id"],
-                status="unavailable",
-                stdout="",
-                stderr=f"unsupported language: {request['language']}",
-                exit_code=None,
-                duration_ms=_duration_ms(started),
-            )
+            return self._result(execution_id=execution_id, run_id=request["run_id"], status="unavailable", stdout="", stderr=f"unsupported language: {request['language']}", exit_code=None, duration_ms=_duration_ms(started))
         if self.config.python_policy_mode == "restricted":
             try:
                 self.policy.validate(request["code"])
             except ExecutionPolicyError as exc:
-                return self._result(
-                    execution_id=execution_id,
-                    run_id=request["run_id"],
-                    status="denied",
-                    stdout="",
-                    stderr=f"python execution blocked by policy: {exc}",
-                    exit_code=None,
-                    duration_ms=_duration_ms(started),
-                )
-
+                return self._result(execution_id=execution_id, run_id=request["run_id"], status="denied", stdout="", stderr=f"python execution blocked by policy: {exc}", exit_code=None, duration_ms=_duration_ms(started))
         execution_root = (self.config.artifact_root / execution_id).resolve()
         execution_root.mkdir(parents=True, exist_ok=True)
         with TemporaryDirectory(prefix=f"uar-{execution_id[:12]}-", dir="/tmp") as tmp:
@@ -348,40 +324,25 @@ class ColabCodeExecutor:
             environment = _execution_environment(request["environment"], workdir)
             try:
                 completed = subprocess.run(
-                    [sys.executable, str(script)],
-                    cwd=str(workdir),
-                    env=environment,
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    shell=False,
-                    timeout=timeout,
-                    check=False,
+                    [sys.executable, str(script)], cwd=str(workdir), env=environment,
+                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    text=True, encoding="utf-8", errors="replace", shell=False,
+                    timeout=timeout, check=False,
                 )
             except subprocess.TimeoutExpired as exc:
                 return self._result(
-                    execution_id=execution_id,
-                    run_id=request["run_id"],
-                    status="timeout",
+                    execution_id=execution_id, run_id=request["run_id"], status="timeout",
                     stdout=_bounded_text(exc.stdout or "", self.config.max_output_bytes),
                     stderr=_bounded_text(exc.stderr or "", self.config.max_output_bytes) or f"execution exceeded {timeout} seconds",
-                    exit_code=None,
-                    duration_ms=_duration_ms(started),
+                    exit_code=None, duration_ms=_duration_ms(started),
                 )
             artifacts = self._collect_artifacts(workdir, execution_root, execution_id)
-
         return self._result(
-            execution_id=execution_id,
-            run_id=request["run_id"],
+            execution_id=execution_id, run_id=request["run_id"],
             status="success" if completed.returncode == 0 else "error",
             stdout=_bounded_text(completed.stdout, self.config.max_output_bytes),
             stderr=_bounded_text(completed.stderr, self.config.max_output_bytes),
-            exit_code=completed.returncode,
-            duration_ms=_duration_ms(started),
-            artifacts=artifacts,
+            exit_code=completed.returncode, duration_ms=_duration_ms(started), artifacts=artifacts,
         )
 
     def _validate_request(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -426,15 +387,11 @@ class ColabCodeExecutor:
             if not path.is_file():
                 continue
             relative = path.relative_to(workdir)
-            if relative == Path("main.py"):
+            if relative == Path("main.py") or len(collected) >= self.config.max_artifacts:
                 continue
-            if len(collected) >= self.config.max_artifacts:
-                break
             size = path.stat().st_size
-            if size > self.config.max_artifact_bytes:
+            if size > self.config.max_artifact_bytes or total_bytes + size > self.config.max_total_artifact_bytes:
                 continue
-            if total_bytes + size > self.config.max_total_artifact_bytes:
-                break
             destination = (execution_root / relative).resolve()
             try:
                 destination.relative_to(execution_root)
@@ -458,9 +415,7 @@ class ColabCodeExecutor:
         return f"artifact://{execution_id}/{encoded}"
 
     @staticmethod
-    def _result(*, execution_id: str, run_id: str, status: str, stdout: str, stderr: str,
-                exit_code: int | None, duration_ms: int,
-                artifacts: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    def _result(*, execution_id: str, run_id: str, status: str, stdout: str, stderr: str, exit_code: int | None, duration_ms: int, artifacts: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         return {
             "execution_id": execution_id,
             "run_id": run_id,
@@ -498,12 +453,9 @@ def serve_forever(config: ExecutionServiceConfig | None = None) -> None:
 
 def _request_fingerprint(request: dict[str, Any]) -> str:
     material = {
-        "run_id": request["run_id"],
-        "worker_id": request["worker_id"],
-        "language": request["language"],
-        "code": request["code"],
-        "timeout_seconds": request["timeout_seconds"],
-        "needs_network": request["needs_network"],
+        "run_id": request["run_id"], "worker_id": request["worker_id"],
+        "language": request["language"], "code": request["code"],
+        "timeout_seconds": request["timeout_seconds"], "needs_network": request["needs_network"],
         "environment": dict(sorted(request["environment"].items())),
     }
     return hashlib.sha256(json.dumps(material, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
