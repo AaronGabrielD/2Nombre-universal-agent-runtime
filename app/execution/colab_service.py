@@ -435,6 +435,31 @@ class ColabCodeExecutor:
         }
 
 
+class RuntimeColabHTTPServer(ThreadingHTTPServer):
+    """HTTP server carrying runtime configuration and the shared execution store."""
+
+    daemon_threads = True
+
+    def __init__(self, address: tuple[str, int], config: ExecutionServiceConfig) -> None:
+        super().__init__(address, ColabExecutionRequestHandler)
+        self.runtime_config = config
+        self.execution_store = ExecutionStore(config.execution_db_path)
+        self.executor = ColabCodeExecutor(config, self.execution_store)
+
+
+def serve_forever(config: ExecutionServiceConfig | None = None) -> None:
+    runtime_config = config or ExecutionServiceConfig()
+    server = RuntimeColabHTTPServer((runtime_config.bind_host, runtime_config.port), runtime_config)
+    print(
+        f"Universal Agent Runtime Colab service listening on "
+        f"{runtime_config.bind_host}:{runtime_config.port}"
+    )
+    try:
+        server.serve_forever()
+    finally:
+        server.server_close()
+
+
 def _request_fingerprint(request: dict[str, Any]) -> str:
     material = {
         "run_id": request["run_id"],
