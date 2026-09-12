@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from pathlib import PurePosixPath
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,10 +38,19 @@ class DeploymentSpec:
             raise ValueError("deployment command cannot be empty")
         if isinstance(self.port, bool) or not isinstance(self.port, int) or not 1 <= self.port <= 65535:
             raise ValueError("deployment port must be between 1 and 65535")
-        if not isinstance(self.health_path, str) or not self.health_path.startswith("/") or "\n" in self.health_path or "\r" in self.health_path or "\"" in self.health_path or "'" in self.health_path or "\\" in self.health_path:
-            raise ValueError("health_path contains unsafe characters")
-        if not isinstance(self.working_directory, str) or not self.working_directory.strip() or "\n" in self.working_directory or "\r" in self.working_directory:
-            raise ValueError("working_directory contains invalid characters")
+        if (
+            not isinstance(self.health_path, str)
+            or len(self.health_path) > 2048
+            or not self.health_path.startswith("/")
+            or "\n" in self.health_path
+            or "\r" in self.health_path
+            or "\"" in self.health_path
+            or "'" in self.health_path
+            or "\\" in self.health_path
+        ):
+            raise ValueError("health_path contains unsafe characters or exceeds 2048 characters")
+        if not isinstance(self.working_directory, str) or not self.working_directory.strip() or len(self.working_directory) > 1024 or "\n" in self.working_directory or "\r" in self.working_directory:
+            raise ValueError("working_directory contains invalid characters or exceeds 1024 characters")
         seen: set[str] = set()
         for entry in self.environment:
             entry.validate()
