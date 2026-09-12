@@ -1,10 +1,8 @@
 """Public M01 API for lifecycle and isolated session state."""
 from __future__ import annotations
-
 from copy import deepcopy
 from threading import RLock
 from typing import Any
-
 from app.approval.models import ApprovalGate, GateStatus
 from app.core.contracts import ArchitecturePlan, ArtifactRef, ExecutionResult, FinalResult, HumanDecision
 from app.core.models import EventRecord, RunContext
@@ -15,7 +13,6 @@ from .repository import InMemorySessionRepository, SessionRepository
 
 class SessionManager:
     """Own one run's lifecycle and serialize all mutable session operations."""
-
     def __init__(self, repository: SessionRepository | None = None) -> None:
         self.repository = repository or InMemorySessionRepository()
         self._lock = RLock()
@@ -87,8 +84,14 @@ class SessionManager:
 
     def add_execution_result(self, run_id: str, result: ExecutionResult) -> None:
         result.validate()
-        if result.run_id != run_id:
+        # Older persisted contracts did not carry run_id. Normalize those records
+        # at the session boundary; any explicit cross-run identity is rejected.
+        if result.run_id is not None and result.run_id != run_id:
             raise ValueError("ExecutionResult.run_id must match the target session")
+        if result.run_id is None:
+            result = ExecutionResult(execution_id=result.execution_id, run_id=run_id, status=result.status,
+                exit_code=result.exit_code, stdout=result.stdout, stderr=result.stderr, duration_ms=result.duration_ms,
+                artifacts=result.artifacts, backend=result.backend)
         with self._lock:
             record = self.repository.get(run_id)
             existing = next((item for item in record.execution_results if item.execution_id == result.execution_id), None)
@@ -112,8 +115,7 @@ class SessionManager:
         return deepcopy(gate)
 
     def resolve_approval_gate(self, run_id: str, gate: ApprovalGate, decision: HumanDecision) -> ApprovalGate:
-        gate.validate()
-        decision.validate()
+        gate.validate(); decision.validate()
         if gate.run_id != run_id or decision.run_id != run_id or decision.gate_id != gate.gate_id:
             raise ValueError("approval gate and decision must match the target session")
         if gate.status != GateStatus.RESOLVED:
@@ -128,9 +130,7 @@ class SessionManager:
                 raise ValueError(f"gate {gate.gate_id} is already {existing.status.value}")
             if any(item.gate_id == decision.gate_id for item in record.decisions):
                 raise ValueError(f"decision already exists for gate {gate.gate_id}")
-            record.approval_gates[index] = deepcopy(gate)
-            record.decisions.append(deepcopy(decision))
-            self.repository.save(record)
+            record.approval_gates[index] = deepcopy(gate); record.decisions.append(deepcopy(decision)); self.repository.save(record)
         return deepcopy(gate)
 
     def cancel_approval_gate(self, run_id: str, gate: ApprovalGate) -> ApprovalGate:
@@ -144,34 +144,28 @@ class SessionManager:
                 raise ValueError(f"unknown gate: {gate.gate_id}")
             if record.approval_gates[index].status != GateStatus.OPEN:
                 raise ValueError(f"gate {gate.gate_id} is already {record.approval_gates[index].status.value}")
-            record.approval_gates[index] = deepcopy(gate)
-            self.repository.save(record)
+            record.approval_gates[index] = deepcopy(gate); self.repository.save(record)
         return deepcopy(gate)
 
     def set_architecture_plan(self, run_id: str, plan: ArchitecturePlan) -> None:
         plan.validate()
         with self._lock:
-            record = self.repository.get(run_id)
-            record.architecture_plan = deepcopy(plan)
-            self.repository.save(record)
+            record = self.repository.get(run_id); record.architecture_plan = deepcopy(plan); self.repository.save(record)
 
     def set_worker_output(self, run_id: str, output: WorkerOutput) -> None:
-        output.validate()
-        if output.run_id != run_id:
-            raise ValueError("WorkerOutput.run_id must match the target session")
+        if not isinstance(output.worker_id, str) or not output.worker_id.strip() or output.run_id != run_id:
+            raise ValueError("WorkerOutput identity must match the target session")
+        if not isinstance(output.status, str) or not output.status.strip() or not isinstance(output.output, dict):
+            raise ValueError("WorkerOutput status/output are invalid")
         with self._lock:
-            record = self.repository.get(run_id)
-            record.worker_outputs[output.worker_id] = deepcopy(output)
-            self.repository.save(record)
+            record = self.repository.get(run_id); record.worker_outputs[output.worker_id] = deepcopy(output); self.repository.save(record)
 
     def set_final_result(self, run_id: str, result: FinalResult) -> None:
         result.validate()
         if result.run_id != run_id:
             raise ValueError("FinalResult.run_id must match the target session")
         with self._lock:
-            record = self.repository.get(run_id)
-            record.final_result = deepcopy(result)
-            self.repository.save(record)
+            record = self.repository.get(run_id); record.final_result = deepcopy(result); self.repository.save(record)
 
     def snapshot(self, run_id: str) -> SessionRecord:
         with self._lock:
