@@ -82,7 +82,10 @@ class M20HttpIntegrationTests(unittest.TestCase):
 
         fetched = Request(
             f"{self.base_url}/executions/exec-dedup",
-            headers={"Authorization": "Bearer integration-test-token"},
+            headers={
+                "Authorization": "Bearer integration-test-token",
+                "X-Idempotency-Key": "idem-exec-dedup",
+            },
         )
         with urlopen(fetched, timeout=5) as response:
             self.assertEqual(response.status, 200)
@@ -144,7 +147,10 @@ class M20HttpIntegrationTests(unittest.TestCase):
     def test_unknown_execution_endpoint_is_not_successful(self):
         request = Request(
             f"{self.base_url}/executions/missing-execution",
-            headers={"Authorization": "Bearer integration-test-token"},
+            headers={
+                "Authorization": "Bearer integration-test-token",
+                "X-Idempotency-Key": "idem-missing-execution",
+            },
         )
         with self.assertRaises(HTTPError) as ctx:
             urlopen(request, timeout=5)
