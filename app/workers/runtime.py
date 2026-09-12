@@ -130,7 +130,11 @@ class WorkerRuntimeAdapter:
                 grant = authorization_by_worker[item.task.worker_id]
                 if not isinstance(grant, ExecutionAuthorization):
                     raise WorkerRuntimeError("authorization_by_worker contains an invalid grant")
-                if not grant.authorized or grant.worker_id != item.task.worker_id:
+                if not grant.authorized:
+                    grant.validate()
+                    result[item.task.worker_id] = grant
+                    continue
+                if grant.worker_id != item.task.worker_id:
                     raise WorkerRuntimeError(
                         f"authorization is not valid for worker {item.task.worker_id}"
                     )
@@ -141,7 +145,12 @@ class WorkerRuntimeAdapter:
 
         if authorization is None:
             raise WorkerRuntimeError("an explicit execution authorization is required")
-        if not authorization.authorized or authorization.run_id != batch.run_id:
+        if not authorization.authorized:
+            authorization.validate()
+            for item in tasks:
+                result[item.task.worker_id] = authorization
+            return result
+        if authorization.run_id != batch.run_id:
             raise WorkerRuntimeError("execution authorization does not match batch")
         if authorization.worker_id == "*":
             if self.settings.execution_backend != "test":
