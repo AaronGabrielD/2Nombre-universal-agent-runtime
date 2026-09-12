@@ -16,7 +16,7 @@ from app.supervisor.models import QAResult, QAStatus, SupervisorInput
 from app.supervisor.service import SupervisorService
 from app.tools.authorization import ToolAuthorizationRequest, ToolAuthorizationService
 from app.workers.models import DispatchBatch, WorkerInstance
-from app.workers.runtime import WorkerRuntimeAdapter, WorkerRuntimeError
+from app.workers.runtime import WorkerRuntimeAdapter
 from app.workers.service import WorkerDispatcher, WorkerFactory
 
 
@@ -68,13 +68,18 @@ class IntegratedOrchestrator:
         self.tool_authorization = tool_authorization
         self.settings = settings or getattr(worker_runtime, "settings", None) or get_settings()
 
-    def _grant_from_gate_a(self, run_id: str, gate_id: str) -> ExecutionAuthorization:
+    def _grant_from_gate_a(
+        self,
+        run_id: str,
+        gate_id: str,
+        worker_id: str,
+    ) -> ExecutionAuthorization:
         grant = ExecutionAuthorization(
             authorized=True,
             reason="worker execution authorized by Gate A",
             gate_id=gate_id,
             run_id=run_id,
-            worker_id="*",
+            worker_id=worker_id,
             backend_id=self.settings.execution_backend,
             network_allowed=False,
         )
@@ -120,8 +125,12 @@ class IntegratedOrchestrator:
             )
             for worker in workers
         )
-        batches = self.worker_dispatcher.plan_batches(run_id=run_id, workers=workers, tasks=tasks)
-        gate_a = self._execution_authorization(run_id)
+        batches = self.worker_dispatcher.plan_batches(
+            run_id=run_id,
+            workers=workers,
+            tasks=tasks,
+        )
+        gate_a = self._find_gate_a(run_id)
         all_results: list[ExecutionResult] = []
 
         for batch in batches:
@@ -135,24 +144,22 @@ class IntegratedOrchestrator:
                     continue
                 task = task_by_worker.get(worker.worker_id)
                 if task is None:
-                    self._set_worker_error(run_id, worker, "dispatcher produced no task for worker")
+                    self._set_worker_error(
+                        run_id,
+                        worker,
+                        "dispatcher produced no task for worker",
+                    )
                     continue
 
                 decision = self._authorize_worker_tools(
                     run_id=run_id,
                     worker=worker,
-                    required_capabilities=tuple(getattr(plan, "required_capabilities", ()) or ()),
+                    required_capabilities=tuple(
+                        getattr(plan, "required_capabilities", ()) or ()
+                    ),
                 )
                 if decision.gate_id is not None and decision.authorization is None:
-                    self.sessions.set_worker_output(
-                        run_id,
-                        WorkerOutput(
-                            worker_id=worker.worker_id,
-                            run_id=run_id,
-                            status="waiting_human",
-                            output={"gate": "TOOL_RISK", "gate_id": decision.gate_id},
-                        ),
-                    )
+                    self._mark_waiting_for_gate(run_id, worker, decision.gate_id)
                     pending.append(
                         _PendingToolGate(
                             worker,
@@ -162,7 +169,11 @@ class IntegratedOrchestrator:
                     )
                     continue
 
-                authorization = decision.authorization or gate_a
+                authorization = decision.authorization or self._grant_from_gate_a(
+                    run_id,
+                    gate_a,
+                    worker.worker_id,
+                )
                 try:
                     execution_plan = self.worker_agent.build_execution_plan(
                         worker=worker,
@@ -171,56 +182,67 @@ class IntegratedOrchestrator:
                             "run_id": run_id,
                             "objective": plan.objective,
                             "acceptance_criteria": list(plan.acceptance_criteria),
-                            "authorized_tools": [tool.tool_id for tool in decision.resolved_tools],
+                            "authorized_tools": [
+                                tool.tool_id for tool in decision.resolved_tools
+                            ],
                         },
                     )
                     if execution_plan.execution_task.needs_network and not authorization.network_allowed:
-                        if self.tool_authorization is None:
-                            raise IntegratedOrchestrationError(
-                                "network execution requires ToolAuthorizationService"
-                            )
-                        network_decision = self.tool_authorization.request_authorization(
-                            ToolAuthorizationRequest(
-                                run_id=run_id,
-                                worker_id=worker.worker_id,
-                                required_tools=worker.required_tools,
-                                required_capabilities=tuple(
-                                    getattr(plan, "required_capabilities", ()) or ()
-                                ),
-                                backend_id=self.settings.execution_backend,
-                                needs_network=True,
-                            )
+                        network_decision = self._authorize_network(
+                            run_id=run_id,
+                            worker=worker,
+                            plan=plan,
                         )
-                        if network_decision.gate_id is not None and network_decision.authorization is None:
+                        if (
+                            network_decision.gate_id is not None
+                            and network_decision.authorization is None
+                        ):
+                            self._mark_waiting_for_gate(
+                                run_id,
+                                worker,
+                                network_decision.gate_id,
+                            )
                             pending.append(
                                 _PendingToolGate(
                                     worker,
                                     network_decision.gate_id,
-                                    tuple(tool.tool_id for tool in network_decision.resolved_tools),
+                                    tuple(
+                                        tool.tool_id
+                                        for tool in network_decision.resolved_tools
+                                    ),
                                 )
                             )
                             continue
-                        authorization = network_decision.authorization or authorization
+                        authorization = (
+                            network_decision.authorization or authorization
+                        )
                     executable.append((worker, execution_plan, authorization))
                 except (RuntimeError, ValueError) as exc:
-                    self._set_worker_error(run_id, worker, f"{type(exc).__name__}: {exc}")
+                    self._set_worker_error(
+                        run_id,
+                        worker,
+                        f"{type(exc).__name__}: {exc}",
+                    )
 
             if executable:
-                results: list[ExecutionResult] = []
-                for worker, execution_plan, authorization in executable:
-                    results.extend(
-                        self.worker_runtime.execute_batch(
-                            batch=DispatchBatch(
-                                run_id=batch.run_id,
-                                workers=(worker,),
-                                tasks=(execution_plan.execution_task.task,),
-                                sequence=batch.sequence,
-                            ),
-                            tasks=(execution_plan.execution_task,),
-                            authorization=authorization,
-                            parallel=False,
-                        )
-                    )
+                execution_workers = tuple(item[0] for item in executable)
+                execution_tasks = tuple(item[1].execution_task.task for item in executable)
+                execution_items = tuple(item[1].execution_task for item in executable)
+                authorization_by_worker = {
+                    worker.worker_id: authorization
+                    for worker, _, authorization in executable
+                }
+                results = self.worker_runtime.execute_batch(
+                    batch=DispatchBatch(
+                        run_id=batch.run_id,
+                        workers=execution_workers,
+                        tasks=execution_tasks,
+                        sequence=batch.sequence,
+                    ),
+                    tasks=execution_items,
+                    authorization_by_worker=authorization_by_worker,
+                    parallel=True,
+                )
                 all_results.extend(results)
                 for (worker, execution_plan, _), result in zip(executable, results):
                     self.sessions.set_worker_output(
@@ -228,7 +250,11 @@ class IntegratedOrchestrator:
                         WorkerOutput(
                             worker_id=worker.worker_id,
                             run_id=run_id,
-                            status="success" if result.status.value == "success" else result.status.value,
+                            status=(
+                                "success"
+                                if result.status.value == "success"
+                                else result.status.value
+                            ),
                             output={
                                 "summary": execution_plan.summary,
                                 "authorized_tools": list(worker.required_tools),
@@ -242,7 +268,10 @@ class IntegratedOrchestrator:
                 self.sessions.add_message(
                     run_id,
                     role="system",
-                    content=f"Worker {selected.worker.worker_id} is paused pending human Gate C approval.",
+                    content=(
+                        f"Worker {selected.worker.worker_id} is paused pending "
+                        "human Gate C approval."
+                    ),
                     metadata={
                         "phase": "tool_authorization",
                         "gate_id": selected.gate_id,
@@ -309,9 +338,13 @@ class IntegratedOrchestrator:
     ) -> OrchestrationResult:
         context = self.sessions.get_context(run_id)
         if context.state != WorkflowState.WORKER_WAITING_HUMAN:
-            raise IntegratedOrchestrationError("tool-gate resume requires WORKER_WAITING_HUMAN")
+            raise IntegratedOrchestrationError(
+                "tool-gate resume requires WORKER_WAITING_HUMAN"
+            )
         if self.tool_authorization is None:
-            raise IntegratedOrchestrationError("ToolAuthorizationService is not configured")
+            raise IntegratedOrchestrationError(
+                "ToolAuthorizationService is not configured"
+            )
 
         gate = self.coordinator.approvals.get_gate(gate_id)
         needs_network = bool(gate.context.get("needs_network", False))
@@ -331,7 +364,11 @@ class IntegratedOrchestrator:
                 worker_id=worker_id,
                 run_id=run_id,
                 status="approved" if authorization.authorized else "denied",
-                output={"gate_id": gate_id, "decision": decision.value, "feedback": feedback},
+                output={
+                    "gate_id": gate_id,
+                    "decision": decision.value,
+                    "feedback": feedback,
+                },
             ),
         )
         if not authorization.authorized:
@@ -372,6 +409,33 @@ class IntegratedOrchestrator:
             )
         )
 
+    def _authorize_network(self, *, run_id: str, worker: WorkerInstance, plan):
+        if self.tool_authorization is None:
+            raise IntegratedOrchestrationError(
+                "network execution requires ToolAuthorizationService"
+            )
+        return self.tool_authorization.request_authorization(
+            ToolAuthorizationRequest(
+                run_id=run_id,
+                worker_id=worker.worker_id,
+                required_tools=worker.required_tools,
+                required_capabilities=tuple(getattr(plan, "required_capabilities", ()) or ()),
+                backend_id=self.settings.execution_backend,
+                needs_network=True,
+            )
+        )
+
+    def _mark_waiting_for_gate(self, run_id: str, worker: WorkerInstance, gate_id: str) -> None:
+        self.sessions.set_worker_output(
+            run_id,
+            WorkerOutput(
+                worker_id=worker.worker_id,
+                run_id=run_id,
+                status="waiting_human",
+                output={"gate": "TOOL_RISK", "gate_id": gate_id},
+            ),
+        )
+
     def _set_worker_error(self, run_id: str, worker: WorkerInstance, error: str) -> None:
         self.sessions.set_worker_output(
             run_id,
@@ -383,7 +447,7 @@ class IntegratedOrchestrator:
             ),
         )
 
-    def _execution_authorization(self, run_id: str) -> ExecutionAuthorization:
+    def _find_gate_a(self, run_id: str) -> str:
         for decision in reversed(self.sessions.snapshot(run_id).decisions):
             if decision.decision != HumanDecisionType.APPROVE:
                 continue
@@ -393,7 +457,10 @@ class IntegratedOrchestrator:
                 and gate.kind == "ARCHITECTURE"
                 and gate.status == GateStatus.RESOLVED
             ):
-                return self._grant_from_gate_a(run_id, gate.gate_id)
+                return gate.gate_id
         raise IntegratedOrchestrationError(
             "no recorded human Gate-A approval is available for execution"
         )
+
+    def _execution_authorization(self, run_id: str, worker_id: str) -> ExecutionAuthorization:
+        return self._grant_from_gate_a(run_id, self._find_gate_a(run_id), worker_id)
