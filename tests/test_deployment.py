@@ -27,7 +27,7 @@ class DeploymentTests(unittest.TestCase):
         self.assertIn('"CMD", "python", "-c"', compose)
         self.assertNotIn("CMD-SHELL", compose)
 
-    def test_health_path_does_not_require_shell_escaping(self):
+    def test_health_path_is_rendered_as_a_process_argument(self):
         spec = DeploymentSpec(
             name="runtime",
             command=("python", "-m", "app"),
@@ -36,7 +36,7 @@ class DeploymentTests(unittest.TestCase):
         )
         render = self.planner.render(self.adapter, spec)
         compose = dict(render.files)["docker-compose.yml"]
-        self.assertIn("CMD-SHELL", compose) if False else self.assertIn("$(touch /tmp/should-not-run)", compose)
+        self.assertIn("$(touch /tmp/should-not-run)", compose)
         self.assertNotIn("CMD-SHELL", compose)
 
     def test_invalid_port_is_rejected(self):
