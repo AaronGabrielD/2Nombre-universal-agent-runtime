@@ -25,6 +25,7 @@ def _settings():
         execution_backend="colab",
         execution_gateway_url="https://example.invalid",
         execution_gateway_token="test-token",
+        execution_authorization_secret="test-execution-authorization-secret-1234567890",
     )
 
 
@@ -52,9 +53,11 @@ class M45RecoveryWiringTests(unittest.TestCase):
     def test_runtime_leaves_backend_authority_disabled_without_gateway(self):
         settings = replace(
             _settings(),
+            execution_backend="test",
             execution_gateway_url=None,
             execution_gateway_token=None,
         )
+        settings.validate()
         with tempfile.TemporaryDirectory() as directory:
             with patch.dict(
                 os.environ,

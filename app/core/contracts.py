@@ -145,6 +145,7 @@ class ExecutionRequest:
     timeout_seconds: int = 60
     needs_network: bool = False
     environment: dict[str, str] = field(default_factory=dict)
+    idempotency_key: str | None = None
 
     def validate(self, *, max_timeout_seconds: int = 3600) -> None:
         require_non_empty_string("execution_id", self.execution_id)
@@ -152,6 +153,10 @@ class ExecutionRequest:
         require_non_empty_string("worker_id", self.worker_id)
         require_non_empty_string("language", self.language)
         require_non_empty_string("code", self.code)
+        if self.idempotency_key is not None:
+            require_non_empty_string("idempotency_key", self.idempotency_key)
+            if len(self.idempotency_key) > 256:
+                raise ContractValidationError("idempotency_key must be at most 256 characters")
         require_positive_integer("max_timeout_seconds", max_timeout_seconds)
         if isinstance(self.timeout_seconds, bool) or not isinstance(self.timeout_seconds, int):
             raise ContractValidationError("timeout_seconds must be an integer")
@@ -198,9 +203,15 @@ class ExecutionResult:
     duration_ms: int
     artifacts: tuple[ArtifactRef, ...] = ()
     backend: str = "unknown"
+    run_id: str | None = None
+    worker_id: str | None = None
 
     def validate(self) -> None:
         require_non_empty_string("execution_id", self.execution_id)
+        if self.run_id is not None:
+            require_non_empty_string("run_id", self.run_id)
+        if self.worker_id is not None:
+            require_non_empty_string("worker_id", self.worker_id)
         if not isinstance(self.status, ExecutionStatus):
             try:
                 ExecutionStatus(self.status)
@@ -261,6 +272,7 @@ class FinalResult:
     tests: tuple[dict[str, Any], ...] = ()
     issues: tuple[str, ...] = ()
     recommended_next_action: str = ""
+    supervisor_evidence_hash: str | None = None
 
     def validate(self) -> None:
         require_non_empty_string("run_id", self.run_id)
@@ -273,6 +285,13 @@ class FinalResult:
         require_string_sequence("issues", self.issues)
         if not isinstance(self.recommended_next_action, str):
             raise ContractValidationError("recommended_next_action must be a string")
+        if self.supervisor_evidence_hash is not None:
+            if not isinstance(self.supervisor_evidence_hash, str) or len(self.supervisor_evidence_hash) != 64:
+                raise ContractValidationError("supervisor_evidence_hash must be a SHA-256 hex digest")
+            try:
+                int(self.supervisor_evidence_hash, 16)
+            except ValueError as exc:
+                raise ContractValidationError("supervisor_evidence_hash must be hexadecimal") from exc
         for name, values in (("deliverables", self.deliverables), ("tests", self.tests)):
             for index, item in enumerate(values):
                 if not isinstance(item, dict):

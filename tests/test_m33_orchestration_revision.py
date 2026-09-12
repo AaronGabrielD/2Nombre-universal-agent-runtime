@@ -92,6 +92,7 @@ def settings():
         execution_backend="revision-test",
         execution_gateway_url=None,
         execution_gateway_token=None,
+        execution_authorization_secret="test-execution-authorization-secret-1234567890",
     )
 
 

@@ -8,6 +8,7 @@ from app.execution.colab_service import (
     ColabCodeExecutor,
     ColabExecutionServiceError,
     ExecutionServiceConfig,
+    RuntimeColabHTTPServer,
     _execution_environment,
     _safe_environment_key,
 )
@@ -21,6 +22,7 @@ class ColabServiceTests(unittest.TestCase):
                 "RUNTIME_EXECUTION_TOKEN": "test-token",
                 "RUNTIME_ARTIFACT_ROOT": root,
                 "RUNTIME_ALLOW_NETWORK": "false",
+                "RUNTIME_MAX_OUTPUT_BYTES": "1024",
             },
             clear=False,
         ):
@@ -66,6 +68,7 @@ class ColabServiceTests(unittest.TestCase):
                         "worker_id": "worker-1",
                         "language": "python",
                         "code": "print('x')",
+                        "idempotency_key": "key-invalid-timeout",
                         "timeout_seconds": 0,
                     }
                 )
@@ -80,6 +83,7 @@ class ColabServiceTests(unittest.TestCase):
                     "worker_id": "worker-1",
                     "language": "python",
                     "code": "print('x')",
+                    "idempotency_key": "key-network-denied",
                     "needs_network": True,
                 }
             )
@@ -96,9 +100,74 @@ class ColabServiceTests(unittest.TestCase):
                     "worker_id": "worker-1",
                     "language": "ruby",
                     "code": "puts 'x'",
+                    "idempotency_key": "key-unsupported-language",
                 }
             )
             self.assertEqual(result["status"], "unavailable")
+
+    def test_subprocess_output_is_bounded_before_return(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            executor = ColabCodeExecutor(self._config(tmp))
+            result = executor.execute(
+                {
+                    "execution_id": "exec-output-limit",
+                    "run_id": "run-1",
+                    "worker_id": "worker-1",
+                    "language": "python",
+                    "code": "print('x' * 10000000)",
+                    "idempotency_key": "key-output-limit",
+                }
+            )
+            self.assertEqual(result["status"], "success")
+            self.assertLessEqual(len(result["stdout"].encode("utf-8")), 1024)
+            self.assertIn("output truncated by execution service", result["stdout"])
+
+    def test_timeout_with_continuous_output_does_not_deadlock(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            executor = ColabCodeExecutor(self._config(tmp))
+            result = executor.execute(
+                {
+                    "execution_id": "exec-output-timeout",
+                    "run_id": "run-1",
+                    "worker_id": "worker-1",
+                    "language": "python",
+                    "code": "import time\nwhile True:\n    print('x' * 4096)\n    time.sleep(0.001)",
+                    "idempotency_key": "key-output-timeout",
+                    "timeout_seconds": 1,
+                }
+            )
+            self.assertEqual(result["status"], "timeout")
+            self.assertLessEqual(len(result["stdout"].encode("utf-8")), 1024)
+            self.assertIn("output truncated by execution service", result["stdout"])
+
+    def test_server_uses_shared_durable_execution_store(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = self._config(tmp)
+            server = RuntimeColabHTTPServer(("127.0.0.1", 0), config)
+            try:
+                self.assertIs(server.executor.store, server.execution_store)
+                self.assertEqual(server.runtime_config.execution_db_path, config.execution_db_path)
+            finally:
+                server.server_close()
+
+    def test_symlinked_artifacts_are_never_collected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            executor = ColabCodeExecutor(self._config(tmp))
+            workdir = Path(tmp) / "work"
+            execution_root = Path(tmp) / "artifacts" / "exec-symlink"
+            workdir.mkdir()
+            execution_root.mkdir(parents=True)
+            target = Path(tmp) / "outside-secret.txt"
+            target.write_text("must-not-export", encoding="utf-8")
+            link = workdir / "leak.txt"
+            try:
+                link.symlink_to(target)
+            except (NotImplementedError, OSError) as exc:
+                self.skipTest(f"symlink creation unavailable: {exc}")
+
+            artifacts = executor._collect_artifacts(workdir, execution_root, "exec-symlink")
+            self.assertEqual(artifacts, [])
+            self.assertFalse((execution_root / "leak.txt").exists())
 
 
 if __name__ == "__main__":

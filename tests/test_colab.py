@@ -18,8 +18,8 @@ class FakeResponse:
     def __exit__(self, exc_type, exc, tb):
         return False
 
-    def read(self):
-        return self._data
+    def read(self, size=None):
+        return self._data if size is None else self._data[:size]
 
 
 def make_request():
@@ -30,6 +30,7 @@ def make_request():
         language="python",
         code="print('ok')",
         timeout_seconds=30,
+        idempotency_key="idem-1",
     )
 
 
@@ -37,6 +38,18 @@ class ColabBackendTests(unittest.TestCase):
     def test_rejects_invalid_url(self):
         with self.assertRaises(ValueError):
             ColabExecutionBackend(base_url="not-a-url")
+
+    def test_requires_idempotency_key(self):
+        backend = ColabExecutionBackend(base_url="https://example.test")
+        request = ExecutionRequest(
+            execution_id="exec-1",
+            run_id="run-1",
+            worker_id="worker-1",
+            language="python",
+            code="print('ok')",
+        )
+        with self.assertRaises(ColabBackendError):
+            backend.execute(request)
 
     def test_posts_json_and_returns_result(self):
         backend = ColabExecutionBackend(
@@ -46,6 +59,7 @@ class ColabBackendTests(unittest.TestCase):
         )
         payload = {
             "execution_id": "exec-1",
+            "run_id": "run-1",
             "status": "success",
             "exit_code": 0,
             "stdout": "ok\n",
@@ -69,6 +83,7 @@ class ColabBackendTests(unittest.TestCase):
         self.assertEqual(captured["url"], "https://example.test/runtime/execute")
         self.assertEqual(captured["method"], "POST")
         self.assertEqual(captured["body"]["execution_id"], "exec-1")
+        self.assertEqual(captured["body"]["idempotency_key"], "idem-1")
         self.assertEqual(captured["timeout"], 20)
         self.assertEqual(result.status, ExecutionStatus.SUCCESS)
         self.assertEqual(result.stdout, "ok\n")

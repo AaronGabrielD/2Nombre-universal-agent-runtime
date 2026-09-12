@@ -58,7 +58,7 @@ class M46RecoveryStateIntegrityTests(unittest.TestCase):
             stdout="",
             stderr="boom",
             duration_ms=9,
-            backend="fake",
+            backend="colab",
         )
         reconciler = FailedExecutionReconciler(failure)
         reconciliation = ExecutionReconciliationService(

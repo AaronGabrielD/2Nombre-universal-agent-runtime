@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
+import hmac
 
 
 @dataclass(frozen=True, slots=True)
@@ -13,20 +15,73 @@ class ExecutionBackendInfo:
     available: bool = True
 
     def validate(self) -> None:
-        if not self.backend_id.strip():
+        if not isinstance(self.backend_id, str) or not self.backend_id.strip():
             raise ValueError("backend_id cannot be empty")
-        if not self.name.strip():
+        if not isinstance(self.name, str) or not self.name.strip():
             raise ValueError("name cannot be empty")
+        if not isinstance(self.available, bool):
+            raise ValueError("available must be boolean")
 
 
 @dataclass(frozen=True, slots=True)
 class ExecutionAuthorization:
-    """Explicit authorization supplied by an upstream policy/approval layer."""
+    """Scoped execution grant with optional cryptographic proof.
+
+    Production gateways require a proof generated from the server-side secret.
+    Tests may omit it when using the explicit ``test`` execution backend.
+    """
 
     authorized: bool
     reason: str = ""
     gate_id: str | None = None
+    run_id: str | None = None
+    worker_id: str | None = None
+    backend_id: str | None = None
+    network_allowed: bool = False
+    proof: str | None = None
 
     def validate(self) -> None:
+        if not isinstance(self.authorized, bool):
+            raise ValueError("authorized must be boolean")
+        if not isinstance(self.reason, str):
+            raise ValueError("reason must be a string")
         if not self.authorized and not self.reason.strip():
             raise ValueError("denied authorization requires a reason")
+        if self.authorized:
+            for name, value in (("run_id", self.run_id), ("worker_id", self.worker_id), ("backend_id", self.backend_id)):
+                if not isinstance(value, str) or not value.strip():
+                    raise ValueError(f"authorized execution requires {name}")
+        if self.gate_id is not None and (not isinstance(self.gate_id, str) or not self.gate_id.strip()):
+            raise ValueError("gate_id must be a non-empty string when supplied")
+        if not isinstance(self.network_allowed, bool):
+            raise ValueError("network_allowed must be boolean")
+        if self.proof is not None and (not isinstance(self.proof, str) or not self.proof.strip()):
+            raise ValueError("proof must be a non-empty string when supplied")
+
+    def signing_material(self) -> str:
+        self.validate()
+        return "\x1f".join(
+            (
+                "1",
+                "1" if self.authorized else "0",
+                self.reason,
+                self.gate_id or "",
+                self.run_id or "",
+                self.worker_id or "",
+                self.backend_id or "",
+                "1" if self.network_allowed else "0",
+            )
+        )
+
+
+def compute_authorization_proof(secret: str, authorization: ExecutionAuthorization) -> str:
+    if not isinstance(secret, str) or len(secret) < 32:
+        raise ValueError("authorization secret must be at least 32 characters")
+    return hmac.new(secret.encode("utf-8"), authorization.signing_material().encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def verify_authorization_proof(secret: str, authorization: ExecutionAuthorization) -> bool:
+    if not isinstance(secret, str) or len(secret) < 32 or not authorization.proof:
+        return False
+    expected = compute_authorization_proof(secret, authorization)
+    return hmac.compare_digest(expected, authorization.proof)

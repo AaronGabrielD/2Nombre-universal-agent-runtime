@@ -10,6 +10,8 @@ from app.supervisor import QAStatus, SupervisorError, SupervisorInput, Superviso
 def execution(status=ExecutionStatus.SUCCESS):
     return ExecutionResult(
         execution_id="exec-1",
+        run_id="run-1",
+        worker_id="worker-1",
         status=status,
         exit_code=0 if status == ExecutionStatus.SUCCESS else None,
         stdout="ok" if status == ExecutionStatus.SUCCESS else "",
@@ -26,7 +28,14 @@ class SupervisorTests(unittest.TestCase):
                 run_id="run-1",
                 objective="Build feature",
                 acceptance_criteria=("tests pass",),
-                worker_outputs=(WorkerOutput("worker-1", "run-1", "success", "done"),),
+                worker_outputs=(
+                    WorkerOutput(
+                        "worker-1",
+                        "run-1",
+                        "success",
+                        {"execution": {"execution_id": "exec-1"}},
+                    ),
+                ),
                 execution_results=(execution(),),
             )
         )
@@ -53,7 +62,14 @@ class SupervisorTests(unittest.TestCase):
                 run_id="run-1",
                 objective="Build feature",
                 acceptance_criteria=("tests pass",),
-                worker_outputs=(WorkerOutput("worker-1", "run-1", "success", "done"),),
+                worker_outputs=(
+                    WorkerOutput(
+                        "worker-1",
+                        "run-1",
+                        "success",
+                        {"execution": {"execution_id": "exec-1"}},
+                    ),
+                ),
                 execution_results=(execution(ExecutionStatus.TIMEOUT),),
             )
         )
@@ -65,7 +81,14 @@ class SupervisorTests(unittest.TestCase):
             SupervisorInput(
                 run_id="run-1",
                 objective="Build feature",
-                worker_outputs=(WorkerOutput("worker-1", "run-1", "success", "done"),),
+                worker_outputs=(
+                    WorkerOutput(
+                        "worker-1",
+                        "run-1",
+                        "success",
+                        {"execution": {"execution_id": "exec-1"}},
+                    ),
+                ),
                 execution_results=(execution(),),
             )
         )

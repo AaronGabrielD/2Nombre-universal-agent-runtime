@@ -18,7 +18,9 @@ class _AuthorityHandler(BaseHTTPRequestHandler):
             "stderr": "",
             "duration_ms": 17,
             "artifacts": [],
-            "backend": "colab-service",
+            "backend": "colab",
+            "run_id": "run-1",
+            "worker_id": "worker-1",
         },
     }
     token = "authority-token"
@@ -61,11 +63,13 @@ class M43ColabReconcilerTests(unittest.TestCase):
         cls.server.server_close()
         cls.thread.join(timeout=2)
 
-    def test_authoritative_success_is_returned(self):
+    def test_authoritative_success_is_returned_with_provenance(self):
         reconciler = ColabExecutionReconciler(base_url=self.base_url, token="authority-token")
         result = reconciler.reconcile(execution_id="exec-ok", idempotency_key="key-1")
         self.assertIsNotNone(result)
         self.assertEqual(result.execution_id, "exec-ok")
+        self.assertEqual(result.run_id, "run-1")
+        self.assertEqual(result.worker_id, "worker-1")
         self.assertEqual(result.status, ExecutionStatus.SUCCESS)
         self.assertEqual(result.stdout, "remote-ok")
 
@@ -88,7 +92,7 @@ class M43ColabReconcilerTests(unittest.TestCase):
             "stderr": "",
             "duration_ms": 1,
             "artifacts": [],
-            "backend": "colab-service",
+            "backend": "colab",
         }
         reconciler = ColabExecutionReconciler(base_url=self.base_url, token="authority-token")
         with self.assertRaises(ColabReconcilerError):
@@ -98,6 +102,25 @@ class M43ColabReconcilerTests(unittest.TestCase):
         reconciler = ColabExecutionReconciler(base_url=self.base_url, token="authority-token")
         with self.assertRaises(ColabReconcilerError):
             reconciler.reconcile(execution_id="exec-ok", idempotency_key="")
+
+    def test_remote_worker_provenance_is_preserved(self):
+        _AuthorityHandler.records["exec-worker-mismatch"] = {
+            "execution_id": "exec-worker-mismatch",
+            "status": "success",
+            "exit_code": 0,
+            "stdout": "",
+            "stderr": "",
+            "duration_ms": 1,
+            "artifacts": [],
+            "backend": "colab",
+            "run_id": "run-1",
+            "worker_id": "worker-2",
+        }
+        reconciler = ColabExecutionReconciler(base_url=self.base_url, token="authority-token")
+        result = reconciler.reconcile(
+            execution_id="exec-worker-mismatch", idempotency_key="key-1"
+        )
+        self.assertEqual(result.worker_id, "worker-2")
 
 
 if __name__ == "__main__":

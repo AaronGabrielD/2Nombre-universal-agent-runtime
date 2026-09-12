@@ -53,7 +53,8 @@ class M27M28Tests(unittest.TestCase):
             repository.create(SessionRecord(context=context))
             path = Path(temp_dir) / f"{context.run_id}.json"
             payload = json.loads(path.read_text(encoding="utf-8"))
-            self.assertEqual(payload["schema_version"], 1)
+            self.assertEqual(payload["schema_version"], JsonFileSessionRepository.SCHEMA_VERSION)
+            self.assertEqual(payload["schema_version"], 2)
             self.assertFalse(path.with_suffix(path.suffix + ".tmp").exists())
 
     def test_migration_runner_applies_each_version_once(self):

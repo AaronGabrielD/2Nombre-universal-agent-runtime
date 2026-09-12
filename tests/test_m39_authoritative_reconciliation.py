@@ -69,7 +69,7 @@ class M39AuthoritativeReconciliationTests(unittest.TestCase):
             stdout="remote-ok",
             stderr="",
             duration_ms=12,
-            backend="remote-fake",
+            backend="colab",
         )
         backend = FakeReconciler(authoritative)
         service = ExecutionReconciliationService(
@@ -95,7 +95,29 @@ class M39AuthoritativeReconciliationTests(unittest.TestCase):
                 stdout="",
                 stderr="",
                 duration_ms=1,
-                backend="remote-fake",
+                backend="colab",
+            )
+        )
+        service = ExecutionReconciliationService(
+            session_manager=sessions, backend_reconciler=backend
+        )
+        with self.assertRaises(ValueError):
+            service.reconcile_backend(run_id=run.run_id, idempotency_key=key)
+        self.assertEqual(len(sessions.snapshot(run.run_id).execution_results), 0)
+
+    def test_cross_worker_backend_evidence_is_rejected_and_not_persisted(self):
+        sessions, run, key, lease = make_pending_run()
+        backend = FakeReconciler(
+            ExecutionResult(
+                execution_id=lease.execution_id,
+                run_id=run.run_id,
+                worker_id="worker-2",
+                status=ExecutionStatus.SUCCESS,
+                exit_code=0,
+                stdout="",
+                stderr="",
+                duration_ms=1,
+                backend="colab",
             )
         )
         service = ExecutionReconciliationService(

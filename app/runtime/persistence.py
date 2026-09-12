@@ -15,8 +15,8 @@ class RuntimePersistenceError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class RuntimePersistenceConfig:
-    backend: str = "memory"
-    location: str | None = None
+    backend: str = "sqlite"
+    location: str | None = "runtime_sessions.db"
 
     def validate(self) -> None:
         if self.backend not in {"memory", "json", "sqlite"}:
@@ -26,7 +26,7 @@ class RuntimePersistenceConfig:
 
 
 def persistence_config_from_environment() -> RuntimePersistenceConfig:
-    backend = os.getenv("UAR_SESSION_REPOSITORY", "memory").strip().lower()
+    backend = os.getenv("UAR_SESSION_REPOSITORY", "sqlite").strip().lower()
     if backend == "json":
         location = os.getenv("UAR_SESSION_REPOSITORY_PATH", "runtime_sessions")
     elif backend == "sqlite":
@@ -38,7 +38,9 @@ def persistence_config_from_environment() -> RuntimePersistenceConfig:
     return config
 
 
-def build_session_repository(config: RuntimePersistenceConfig | None = None) -> SessionRepository:
+def build_session_repository(
+    config: RuntimePersistenceConfig | None = None,
+) -> SessionRepository:
     config = config or persistence_config_from_environment()
     config.validate()
     if config.backend == "memory":

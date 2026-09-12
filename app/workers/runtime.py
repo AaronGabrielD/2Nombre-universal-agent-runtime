@@ -1,16 +1,12 @@
-"""Worker runtime adapter for connecting M06 planning to M08 execution.
-
-The adapter executes only pre-built worker tasks. It does not decide whether a
-run may execute; upstream orchestration must provide explicit authorization to
-M08 for every execution request.
-"""
+"""Worker runtime adapter for connecting M06 planning to M08 execution."""
 from __future__ import annotations
 
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from uuid import uuid4
 
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.core.contracts import ExecutionRequest, ExecutionResult, TaskSpec
 from app.execution.lease import ExecutionLeaseError, ExecutionLeaseService
 from app.execution.models import ExecutionAuthorization
@@ -22,17 +18,11 @@ from .models import DispatchBatch
 
 
 class WorkerRuntimeError(RuntimeError):
-    """Raised when a worker batch cannot be safely translated to execution."""
+    """Raised when a worker execution cannot safely proceed."""
 
 
 @dataclass(frozen=True, slots=True)
 class WorkerExecutionTask:
-    """Executable representation of one planned task.
-
-    Code must be supplied by an upstream worker implementation. The runtime
-    adapter does not ask an LLM to generate code and does not invent tasks.
-    """
-
     task: TaskSpec
     language: str
     code: str
@@ -42,14 +32,16 @@ class WorkerExecutionTask:
 
     def validate(self) -> None:
         self.task.validate()
-        if not self.language.strip():
+        if not isinstance(self.language, str) or not self.language.strip():
             raise WorkerRuntimeError("language cannot be empty")
-        if not self.code.strip():
+        if not isinstance(self.code, str) or not self.code.strip():
             raise WorkerRuntimeError("worker execution code cannot be empty")
-        if not isinstance(self.timeout_seconds, int) or isinstance(self.timeout_seconds, bool):
-            raise WorkerRuntimeError("timeout_seconds must be an integer")
-        if self.timeout_seconds < 1:
-            raise WorkerRuntimeError("timeout_seconds must be positive")
+        if (
+            not isinstance(self.timeout_seconds, int)
+            or isinstance(self.timeout_seconds, bool)
+            or self.timeout_seconds < 1
+        ):
+            raise WorkerRuntimeError("timeout_seconds must be a positive integer")
         if not isinstance(self.needs_network, bool):
             raise WorkerRuntimeError("needs_network must be boolean")
         if not isinstance(self.environment, dict) or not all(
@@ -60,12 +52,7 @@ class WorkerExecutionTask:
 
 
 class WorkerRuntimeAdapter:
-    """Execute worker batches through M08 and persist results in M01.
-
-    Sequential execution remains the default. Parallel execution is opt-in,
-    bounded by the runtime's MAX_WORKERS safety ceiling, and preserves the
-    caller's task/result ordering.
-    """
+    """Execute run-scoped worker tasks through the central execution gateway."""
 
     def __init__(
         self,
@@ -73,59 +60,112 @@ class WorkerRuntimeAdapter:
         gateway: ExecutionGateway,
         session_manager: SessionManager,
         lease_service: ExecutionLeaseService | None = None,
+        settings: Settings | None = None,
     ) -> None:
         self.gateway = gateway
         self.sessions = session_manager
         self.leases = lease_service or ExecutionLeaseService(session_manager=session_manager)
+        self.settings = settings or getattr(gateway, "_settings", None) or get_settings()
 
     def execute_batch(
         self,
         *,
         batch: DispatchBatch,
         tasks: tuple[WorkerExecutionTask, ...],
-        authorization: ExecutionAuthorization,
+        authorization: ExecutionAuthorization | None = None,
+        authorization_by_worker: Mapping[str, ExecutionAuthorization] | None = None,
         backend_id: str | None = None,
         parallel: bool = False,
     ) -> tuple[ExecutionResult, ...]:
-        """Execute a dependency-safe batch and record every result in M01.
-
-        ``parallel=True`` only overlaps independent tasks already grouped into
-        the same M06 dispatch batch. Every task still crosses M08 independently
-        with the same explicit authorization. Results are returned in input
-        order even when completion order differs.
-        """
         self._validate_batch(batch=batch, tasks=tasks)
         validated_tasks = tuple(tasks)
         for item in validated_tasks:
             item.validate()
-
+        authorizations = self._resolve_authorizations(
+            batch=batch,
+            tasks=validated_tasks,
+            authorization=authorization,
+            authorization_by_worker=authorization_by_worker,
+        )
         if not parallel or len(validated_tasks) <= 1:
             return tuple(
                 self._execute_one(
                     batch=batch,
                     item=item,
-                    authorization=authorization,
+                    authorization=authorizations[item.task.worker_id],
                     backend_id=backend_id,
                 )
                 for item in validated_tasks
             )
-
-        max_workers = min(len(validated_tasks), get_settings().max_workers)
-        with ThreadPoolExecutor(
-            max_workers=max_workers,
-            thread_name_prefix="uar-worker",
-        ) as pool:
+        max_workers = min(len(validated_tasks), self.settings.max_workers)
+        with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="uar-worker") as pool:
             futures = tuple(
                 pool.submit(
                     self._execute_one,
                     batch=batch,
                     item=item,
-                    authorization=authorization,
+                    authorization=authorizations[item.task.worker_id],
                     backend_id=backend_id,
                 )
                 for item in validated_tasks
             )
             return tuple(future.result() for future in futures)
+
+    def _resolve_authorizations(
+        self,
+        *,
+        batch: DispatchBatch,
+        tasks: tuple[WorkerExecutionTask, ...],
+        authorization: ExecutionAuthorization | None,
+        authorization_by_worker: Mapping[str, ExecutionAuthorization] | None,
+    ) -> dict[str, ExecutionAuthorization]:
+        result: dict[str, ExecutionAuthorization] = {}
+        worker_ids = {item.task.worker_id for item in tasks}
+        if authorization_by_worker is not None:
+            if set(authorization_by_worker) != worker_ids:
+                raise WorkerRuntimeError(
+                    "authorization_by_worker must contain exactly one grant per task worker"
+                )
+            for item in tasks:
+                grant = authorization_by_worker[item.task.worker_id]
+                if not isinstance(grant, ExecutionAuthorization):
+                    raise WorkerRuntimeError("authorization_by_worker contains an invalid grant")
+                if not grant.authorized:
+                    grant.validate()
+                    result[item.task.worker_id] = grant
+                    continue
+                if grant.worker_id != item.task.worker_id:
+                    raise WorkerRuntimeError(
+                        f"authorization is not valid for worker {item.task.worker_id}"
+                    )
+                if grant.run_id != batch.run_id:
+                    raise WorkerRuntimeError("authorization run_id does not match batch")
+                result[item.task.worker_id] = grant
+            return result
+
+        if authorization is None:
+            raise WorkerRuntimeError("an explicit execution authorization is required")
+        if not authorization.authorized:
+            authorization.validate()
+            for item in tasks:
+                result[item.task.worker_id] = authorization
+            return result
+        if authorization.run_id != batch.run_id:
+            raise WorkerRuntimeError("execution authorization does not match batch")
+        if authorization.worker_id == "*":
+            if self.settings.execution_backend != "test":
+                raise WorkerRuntimeError(
+                    "wildcard worker authorization is forbidden outside test mode"
+                )
+        elif authorization.worker_id not in worker_ids:
+            raise WorkerRuntimeError("execution authorization does not match any task worker")
+        for item in tasks:
+            if authorization.worker_id not in {"*", item.task.worker_id}:
+                raise WorkerRuntimeError(
+                    f"worker-scoped execution requires authorization for {item.task.worker_id}"
+                )
+            result[item.task.worker_id] = authorization
+        return result
 
     def _validate_batch(
         self,
@@ -133,7 +173,7 @@ class WorkerRuntimeAdapter:
         batch: DispatchBatch,
         tasks: tuple[WorkerExecutionTask, ...],
     ) -> None:
-        if not batch.run_id.strip():
+        if not isinstance(batch.run_id, str) or not batch.run_id.strip():
             raise WorkerRuntimeError("batch.run_id cannot be empty")
         try:
             self.sessions.get_context(batch.run_id)
@@ -141,15 +181,12 @@ class WorkerRuntimeAdapter:
             raise WorkerRuntimeError(f"unknown run_id: {batch.run_id}") from exc
         if any(worker.run_id != batch.run_id for worker in batch.workers):
             raise WorkerRuntimeError("all batch workers must belong to batch.run_id")
-
         worker_ids = {worker.worker_id for worker in batch.workers}
         task_workers = {item.task.worker_id for item in tasks}
-        unknown = task_workers - worker_ids
-        if unknown:
+        if task_workers - worker_ids:
             raise WorkerRuntimeError(
-                f"tasks reference workers outside the batch: {sorted(unknown)}"
+                f"tasks reference workers outside the batch: {sorted(task_workers - worker_ids)}"
             )
-
         if len(task_workers) != len(tasks):
             raise WorkerRuntimeError(
                 "a dispatch batch cannot contain multiple tasks for the same worker"
@@ -163,6 +200,13 @@ class WorkerRuntimeAdapter:
         authorization: ExecutionAuthorization,
         backend_id: str | None,
     ) -> ExecutionResult:
+        key = self.leases.idempotency_key(
+            run_id=batch.run_id,
+            worker_id=item.task.worker_id,
+            task_id=item.task.task_id,
+            language=item.language,
+            code=item.code,
+        )
         execution = ExecutionRequest(
             execution_id=f"exec-{uuid4().hex}",
             run_id=batch.run_id,
@@ -172,20 +216,14 @@ class WorkerRuntimeAdapter:
             timeout_seconds=item.timeout_seconds,
             needs_network=item.needs_network,
             environment=dict(item.environment),
-        )
-        idempotency_key = self.leases.idempotency_key(
-            run_id=batch.run_id,
-            worker_id=item.task.worker_id,
-            task_id=item.task.task_id,
-            language=item.language,
-            code=item.code,
+            idempotency_key=key,
         )
         try:
             lease = self.leases.reserve(
                 run_id=batch.run_id,
                 worker_id=item.task.worker_id,
                 task_id=item.task.task_id,
-                idempotency_key=idempotency_key,
+                idempotency_key=key,
                 execution_id=execution.execution_id,
             )
         except ExecutionLeaseError as exc:

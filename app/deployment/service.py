@@ -1,8 +1,8 @@
 """Provider-neutral deployment planning and rendering boundary."""
 from __future__ import annotations
 
+import json
 from typing import Protocol
-
 from .models import DeploymentRender, DeploymentSpec
 
 
@@ -12,13 +12,10 @@ class DeploymentAdapterError(RuntimeError):
 
 class DeploymentAdapter(Protocol):
     provider: str
-
     def render(self, spec: DeploymentSpec) -> DeploymentRender: ...
 
 
 class DeploymentPlanner:
-    """Validate a portable deployment spec before handing it to a provider adapter."""
-
     def validate(self, spec: DeploymentSpec) -> DeploymentSpec:
         spec.validate()
         return spec
@@ -27,38 +24,43 @@ class DeploymentPlanner:
         self.validate(spec)
         result = adapter.render(spec)
         if result.provider != adapter.provider:
-            raise DeploymentAdapterError(
-                f"deployment adapter returned provider {result.provider!r}; expected {adapter.provider!r}"
-            )
+            raise DeploymentAdapterError(f"deployment adapter returned provider {result.provider!r}; expected {adapter.provider!r}")
         return result
 
 
 class DockerComposeDeploymentAdapter:
     """Render a minimal Docker Compose service without invoking Docker."""
-
     provider = "docker-compose"
 
     def render(self, spec: DeploymentSpec) -> DeploymentRender:
         spec.validate()
         env_lines = []
         for item in spec.environment:
-            value = item.value if item.value is not None else ""
-            if item.secret and item.value is not None:
-                value = "${%s}" % item.key
-            env_lines.append(f"      {item.key}: {value!r}")
-        environment = "\n".join(env_lines) if env_lines else "      { }"
-        command = "[" + ", ".join(repr(part) for part in spec.command) + "]"
+            value = f"${{{item.key}}}" if item.secret else (item.value or "")
+            env_lines.append(f"      {json.dumps(item.key)}: {json.dumps(value)}")
+        environment = "\n".join(env_lines) if env_lines else "      {}"
+        command = json.dumps(list(spec.command), ensure_ascii=False)
+        working_directory = json.dumps(spec.working_directory, ensure_ascii=False)
+        health_url = f"http://127.0.0.1:{spec.port}{spec.health_path}"
+        health_python = (
+            "import urllib.request; urllib.request.urlopen("
+            f"{json.dumps(health_url, ensure_ascii=False)}, timeout=4)"
+        )
+        healthcheck = ", ".join(
+            json.dumps(item, ensure_ascii=False)
+            for item in ("CMD", "python", "-c", health_python)
+        )
         compose = (
             "services:\n"
             f"  {spec.name}:\n"
             "    build: .\n"
-            f"    working_dir: {spec.working_directory!r}\n"
+            f"    working_dir: {working_directory}\n"
             f"    command: {command}\n"
-            f"    ports:\n      - \"{spec.port}:{spec.port}\"\n"
+            f"    ports:\n      - {json.dumps(f'{spec.port}:{spec.port}')}\n"
             f"    environment:\n{environment}\n"
             "    restart: unless-stopped\n"
             "    healthcheck:\n"
-            f"      test: [\"CMD-SHELL\", \"python -c 'import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:{spec.port}{spec.health_path}\")'\"]\n"
+            f"      test: [{healthcheck}]\n"
             "      interval: 30s\n"
             "      timeout: 5s\n"
             "      retries: 3\n"
@@ -68,8 +70,4 @@ class DockerComposeDeploymentAdapter:
             "Populate secret environment variables in the target secret store; do not commit them.",
             "Expose the configured port only where required by the deployment environment.",
         )
-        return DeploymentRender(
-            provider=self.provider,
-            files=(("docker-compose.yml", compose),),
-            instructions=instructions,
-        )
+        return DeploymentRender(provider=self.provider, files=(("docker-compose.yml", compose),), instructions=instructions)

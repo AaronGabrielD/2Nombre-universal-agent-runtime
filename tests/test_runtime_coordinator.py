@@ -2,12 +2,21 @@ import unittest
 
 from app.approval.service import HumanApprovalEngine
 from app.architect.models import ArchitectureInput
-from app.core.contracts import ArchitecturePlan, HumanDecision, HumanDecisionType, WorkerSpec
+from app.core.contracts import (
+    ArchitecturePlan,
+    ExecutionResult,
+    ExecutionStatus,
+    HumanDecision,
+    HumanDecisionType,
+    WorkerSpec,
+    to_dict,
+)
 from app.core.states import WorkflowState
 from app.intake.service import IntakeService
 from app.runtime.service import RuntimeCoordinator, RuntimeCoordinatorError
 from app.session.manager import SessionManager
-from app.supervisor.models import QAResult, QAStatus
+from app.session.models import WorkerOutput
+from app.supervisor.models import QAResult, QAStatus, SupervisorInput
 
 
 class StubArchitect:
@@ -112,18 +121,46 @@ class RuntimeCoordinatorTests(unittest.TestCase):
             feedback="Approved.",
         )
         coordinator.apply_architecture_decision(first)
+        sessions.set_worker_output(
+            intake.run_id,
+            WorkerOutput(
+                worker_id="worker-1",
+                run_id=intake.run_id,
+                status="success",
+                output={"execution": {"execution_id": "exec-final-test"}},
+            ),
+        )
+        sessions.add_execution_result(
+            intake.run_id,
+            ExecutionResult(
+                execution_id="exec-final-test",
+                run_id=intake.run_id,
+                worker_id="worker-1",
+                status=ExecutionStatus.SUCCESS,
+                exit_code=0,
+                stdout="ok",
+                stderr="",
+                duration_ms=1,
+                backend="test",
+            ),
+        )
         sessions.transition(intake.run_id, WorkflowState.SUPERVISING)
 
-        qa = QAResult(
-            run_id=intake.run_id,
-            status=QAStatus.PASS,
-            score=1.0,
-            summary="All criteria met.",
-            findings=(),
-            blocking_issues=(),
-            recommended_action="request_final_human_approval",
-            evidence={},
+        snapshot = sessions.snapshot(intake.run_id)
+        plan = snapshot.architecture_plan
+        self.assertIsNotNone(plan)
+        qa = coordinator.supervisor.evaluate(
+            SupervisorInput(
+                run_id=intake.run_id,
+                objective=plan.objective,
+                acceptance_criteria=plan.acceptance_criteria,
+                worker_outputs=tuple(snapshot.worker_outputs.values()),
+                execution_results=snapshot.execution_results,
+                artifacts=tuple(to_dict(artifact) for artifact in snapshot.artifacts),
+            )
         )
+        self.assertEqual(qa.status, QAStatus.PASS)
+
         gate_id = coordinator.record_supervisor_result(qa)
         self.assertEqual(
             sessions.get_context(intake.run_id).state,

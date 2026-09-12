@@ -79,7 +79,7 @@ class M41RecoveryAuditTests(unittest.TestCase):
                 stdout="ok",
                 stderr="",
                 duration_ms=5,
-                backend="fake",
+                backend="colab",
             )
         )
         service = ExecutionReconciliationService(
