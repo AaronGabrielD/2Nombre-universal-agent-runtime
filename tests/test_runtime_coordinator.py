@@ -121,7 +121,7 @@ class RuntimeCoordinatorTests(unittest.TestCase):
             feedback="Approved.",
         )
         coordinator.apply_architecture_decision(first)
-        sessions.add_worker_output(
+        sessions.set_worker_output(
             intake.run_id,
             WorkerOutput(
                 worker_id="worker-1",
