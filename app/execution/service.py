@@ -4,10 +4,8 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from time import monotonic
 from typing import Iterable
-
 from app.core.config import Settings, get_settings
 from app.core.contracts import ExecutionRequest, ExecutionResult, ExecutionStatus
-
 from .models import ExecutionAuthorization, ExecutionBackendInfo
 
 
@@ -52,10 +50,10 @@ class ExecutionGateway:
             auth.validate()
         except ValueError as exc:
             raise ExecutionGatewayError(str(exc)) from exc
-
         selected_id = auth.backend_id or backend_id or self._settings.execution_backend
         if auth.authorized:
-            if auth.run_id != request.run_id or auth.worker_id != request.worker_id:
+            worker_matches = auth.worker_id == request.worker_id or auth.worker_id == "*"
+            if auth.run_id != request.run_id or not worker_matches:
                 raise ExecutionGatewayError("authorization scope does not match execution request")
             if auth.backend_id != selected_id:
                 raise ExecutionGatewayError("authorization does not permit the selected backend")
@@ -63,29 +61,22 @@ class ExecutionGateway:
                 return self._denied(request, "network access is not authorized", selected_id)
         else:
             return self._denied(request, auth.reason, selected_id)
-
         backend = self._backends.get(selected_id)
         if backend is None:
-            return ExecutionResult(execution_id=request.execution_id, run_id=request.run_id,
-                status=ExecutionStatus.UNAVAILABLE, exit_code=None, stdout="",
-                stderr=f"execution backend is not registered: {selected_id}", duration_ms=0, backend=selected_id)
+            return ExecutionResult(execution_id=request.execution_id, run_id=request.run_id, status=ExecutionStatus.UNAVAILABLE,
+                exit_code=None, stdout="", stderr=f"execution backend is not registered: {selected_id}", duration_ms=0, backend=selected_id)
         if not backend.info.available:
-            return ExecutionResult(execution_id=request.execution_id, run_id=request.run_id,
-                status=ExecutionStatus.UNAVAILABLE, exit_code=None, stdout="",
-                stderr=f"execution backend is unavailable: {selected_id}", duration_ms=0, backend=selected_id)
-
+            return ExecutionResult(execution_id=request.execution_id, run_id=request.run_id, status=ExecutionStatus.UNAVAILABLE,
+                exit_code=None, stdout="", stderr=f"execution backend is unavailable: {selected_id}", duration_ms=0, backend=selected_id)
         started = monotonic()
         try:
             result = backend.execute(request)
         except TimeoutError as exc:
-            return ExecutionResult(execution_id=request.execution_id, run_id=request.run_id,
-                status=ExecutionStatus.TIMEOUT, exit_code=None, stdout="", stderr=str(exc) or "execution timed out",
-                duration_ms=_elapsed_ms(started), backend=selected_id)
+            return ExecutionResult(execution_id=request.execution_id, run_id=request.run_id, status=ExecutionStatus.TIMEOUT,
+                exit_code=None, stdout="", stderr=str(exc) or "execution timed out", duration_ms=_elapsed_ms(started), backend=selected_id)
         except Exception as exc:
-            return ExecutionResult(execution_id=request.execution_id, run_id=request.run_id,
-                status=ExecutionStatus.ERROR, exit_code=None, stdout="", stderr=f"{type(exc).__name__}: {exc}",
-                duration_ms=_elapsed_ms(started), backend=selected_id)
-
+            return ExecutionResult(execution_id=request.execution_id, run_id=request.run_id, status=ExecutionStatus.ERROR,
+                exit_code=None, stdout="", stderr=f"{type(exc).__name__}: {exc}", duration_ms=_elapsed_ms(started), backend=selected_id)
         if result.execution_id != request.execution_id:
             raise ExecutionGatewayError("backend returned an inconsistent execution_id")
         if result.run_id not in (None, request.run_id):
@@ -93,17 +84,16 @@ class ExecutionGateway:
         if result.backend != selected_id:
             raise ExecutionGatewayError("backend returned inconsistent backend provenance")
         if result.run_id is None:
-            result = ExecutionResult(execution_id=result.execution_id, run_id=request.run_id,
-                status=result.status, exit_code=result.exit_code, stdout=result.stdout,
-                stderr=result.stderr, duration_ms=result.duration_ms, artifacts=result.artifacts, backend=selected_id)
+            result = ExecutionResult(execution_id=result.execution_id, run_id=request.run_id, status=result.status,
+                exit_code=result.exit_code, stdout=result.stdout, stderr=result.stderr, duration_ms=result.duration_ms,
+                artifacts=result.artifacts, backend=selected_id)
         result.validate()
         return result
 
     @staticmethod
     def _denied(request: ExecutionRequest, reason: str, backend_id: str) -> ExecutionResult:
-        return ExecutionResult(execution_id=request.execution_id, run_id=request.run_id,
-            status=ExecutionStatus.DENIED, exit_code=None, stdout="", stderr=reason,
-            duration_ms=0, backend=backend_id)
+        return ExecutionResult(execution_id=request.execution_id, run_id=request.run_id, status=ExecutionStatus.DENIED,
+            exit_code=None, stdout="", stderr=reason, duration_ms=0, backend=backend_id)
 
 
 def _elapsed_ms(started: float) -> int:
