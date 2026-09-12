@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from app.core.contracts import ExecutionStatus
+
 from .models import QAResult, QAStatus, SupervisorInput
 
 
@@ -11,6 +12,14 @@ class SupervisorError(RuntimeError):
 
 class SupervisorService:
     """Evaluate worker/execution evidence without mutating session state."""
+
+    SUCCESS_STATUSES = {"success", "completed", "ok"}
+    FAILURE_EXECUTION_STATUSES = {
+        ExecutionStatus.ERROR,
+        ExecutionStatus.TIMEOUT,
+        ExecutionStatus.DENIED,
+        ExecutionStatus.UNAVAILABLE,
+    }
 
     def evaluate(self, data: SupervisorInput) -> QAResult:
         try:
@@ -22,51 +31,95 @@ class SupervisorService:
         blocking: list[str] = []
         worker_ids = [item.worker_id for item in data.worker_outputs]
         execution_ids = {result.execution_id for result in data.execution_results}
-        evidence = {"worker_count": len(worker_ids), "execution_count": len(data.execution_results),
-                    "acceptance_criteria_count": len(data.acceptance_criteria)}
+        evidence = {
+            "worker_count": len(worker_ids),
+            "execution_count": len(data.execution_results),
+            "acceptance_criteria_count": len(data.acceptance_criteria),
+        }
 
-        invalid_run_results = [r.execution_id for r in data.execution_results if r.run_id != data.run_id]
+        invalid_run_results = [
+            result.execution_id
+            for result in data.execution_results
+            if result.run_id != data.run_id
+        ]
         if invalid_run_results:
-            blocking.append(f"Execution evidence belongs to another run: {sorted(invalid_run_results)}")
+            blocking.append(
+                f"Execution evidence belongs to another run: {sorted(invalid_run_results)}"
+            )
 
         if len(set(worker_ids)) != len(worker_ids):
             blocking.append("Duplicate worker evidence was supplied.")
         if not data.worker_outputs:
             blocking.append("No worker outputs were produced.")
 
-        failed_workers = [item.worker_id for item in data.worker_outputs if item.status.lower() not in {"success", "completed", "ok"}]
+        failed_workers = [
+            item.worker_id
+            for item in data.worker_outputs
+            if not isinstance(item.status, str)
+            or item.status.lower() not in self.SUCCESS_STATUSES
+        ]
         if failed_workers:
-            blocking.append(f"Workers did not complete successfully: {sorted(failed_workers)}")
+            blocking.append(
+                f"Workers did not complete successfully: {sorted(failed_workers)}"
+            )
 
-        execution_failures = [result for result in data.execution_results if result.status in {
-            ExecutionStatus.ERROR, ExecutionStatus.TIMEOUT, ExecutionStatus.DENIED, ExecutionStatus.UNAVAILABLE}]
+        execution_failures = [
+            result
+            for result in data.execution_results
+            if result.status in self.FAILURE_EXECUTION_STATUSES
+        ]
         if execution_failures:
-            blocking.append(f"{len(execution_failures)} execution result(s) are not successful.")
+            blocking.append(
+                f"{len(execution_failures)} execution result(s) are not successful."
+            )
 
-        # A worker marked successful must carry a concrete execution reference that
-        # resolves to an execution result for this exact run. Text such as 'success'
-        # is never accepted as execution evidence by itself.
-        missing_execution_evidence = []
+        missing_execution_evidence: list[str] = []
+        mismatched_execution_workers: list[str] = []
         for item in data.worker_outputs:
-            if item.status.lower() not in {"success", "completed", "ok"}:
+            if item.status.lower() not in self.SUCCESS_STATUSES:
                 continue
             execution = item.output.get("execution") if isinstance(item.output, dict) else None
             execution_id = execution.get("execution_id") if isinstance(execution, dict) else None
             if execution_id not in execution_ids:
                 missing_execution_evidence.append(item.worker_id)
+                continue
+            matching_results = [
+                result for result in data.execution_results if result.execution_id == execution_id
+            ]
+            if not matching_results or any(
+                result.run_id != data.run_id or result.status != ExecutionStatus.SUCCESS
+                for result in matching_results
+            ):
+                mismatched_execution_workers.append(item.worker_id)
+
         if missing_execution_evidence:
-            blocking.append(f"Successful workers lack attributable execution evidence: {sorted(missing_execution_evidence)}")
+            blocking.append(
+                "Successful workers lack attributable execution evidence: "
+                f"{sorted(missing_execution_evidence)}"
+            )
+        if mismatched_execution_workers:
+            blocking.append(
+                "Successful workers reference non-successful execution evidence: "
+                f"{sorted(mismatched_execution_workers)}"
+            )
 
         if not data.acceptance_criteria:
-            findings.append("No acceptance criteria were supplied; qualitative completion cannot be fully verified.")
+            findings.append(
+                "No acceptance criteria were supplied; qualitative completion cannot be fully verified."
+            )
 
         evidence["failed_worker_ids"] = sorted(failed_workers)
         evidence["failed_execution_count"] = len(execution_failures)
         evidence["invalid_execution_run_ids"] = sorted(invalid_run_results)
         evidence["missing_execution_evidence_workers"] = sorted(missing_execution_evidence)
+        evidence["mismatched_execution_workers"] = sorted(mismatched_execution_workers)
 
         if blocking:
-            status = QAStatus.REVISE if failed_workers or execution_failures or missing_execution_evidence else QAStatus.FAIL
+            status = (
+                QAStatus.REVISE
+                if failed_workers or execution_failures or missing_execution_evidence or mismatched_execution_workers
+                else QAStatus.FAIL
+            )
             score = 0.0
             summary = "The run is not ready for final approval."
             recommended = "revise_and_reexecute"
@@ -81,8 +134,15 @@ class SupervisorService:
             summary = "Deterministic QA checks passed; the run may proceed to final human approval."
             recommended = "request_final_human_approval"
 
-        result = QAResult(run_id=data.run_id, status=status, score=score, summary=summary,
-                          findings=tuple(findings), blocking_issues=tuple(blocking),
-                          recommended_action=recommended, evidence=evidence)
+        result = QAResult(
+            run_id=data.run_id,
+            status=status,
+            score=score,
+            summary=summary,
+            findings=tuple(findings),
+            blocking_issues=tuple(blocking),
+            recommended_action=recommended,
+            evidence=evidence,
+        )
         result.validate()
         return result
