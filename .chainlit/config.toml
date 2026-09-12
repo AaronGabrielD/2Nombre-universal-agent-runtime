@@ -13,3 +13,6 @@ enabled = false
 [UI]
 name = "Universal Agent Runtime"
 unsafe_allow_html = false
+
+[meta]
+generated_by = "2.12.0"
