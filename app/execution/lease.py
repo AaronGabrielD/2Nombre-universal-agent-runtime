@@ -59,10 +59,14 @@ class ExecutionLeaseService:
                         "CREATE INDEX IF NOT EXISTS idx_execution_leases_run ON execution_leases(run_id)"
                     )
             except sqlite3.Error as exc:
-                raise ExecutionLeaseError(f"failed to initialize durable execution leases: {exc}") from exc
+                raise ExecutionLeaseError(
+                    f"failed to initialize durable execution leases: {exc}"
+                ) from exc
 
     @staticmethod
-    def idempotency_key(*, run_id: str, worker_id: str, task_id: str, language: str, code: str) -> str:
+    def idempotency_key(
+        *, run_id: str, worker_id: str, task_id: str, language: str, code: str
+    ) -> str:
         material = "\x1f".join((run_id, worker_id, task_id, language, code))
         return sha256(material.encode("utf-8")).hexdigest()
 
@@ -129,20 +133,27 @@ class ExecutionLeaseService:
         except sqlite3.IntegrityError:
             existing = self._sqlite_get(fields["run_id"], fields["idempotency_key"])
             if existing is None:
-                raise ExecutionLeaseError("execution lease uniqueness conflict could not be resolved")
+                raise ExecutionLeaseError(
+                    "execution lease uniqueness conflict could not be resolved"
+                )
             if existing.status == "COMPLETED":
                 return existing
             raise ExecutionLeaseError(
                 f"execution lease already active for idempotency key {fields['idempotency_key']}"
             )
         except sqlite3.Error as exc:
-            raise ExecutionLeaseError(f"failed to reserve durable execution lease: {exc}") from exc
+            raise ExecutionLeaseError(
+                f"failed to reserve durable execution lease: {exc}"
+            ) from exc
         try:
             self._audit_reservation(lease)
         except Exception as exc:
             try:
                 with sqlite3.connect(self._sqlite_path) as connection:
-                    connection.execute("DELETE FROM execution_leases WHERE lease_id = ?", (lease.lease_id,))
+                    connection.execute(
+                        "DELETE FROM execution_leases WHERE lease_id = ?",
+                        (lease.lease_id,),
+                    )
             except sqlite3.Error:
                 pass
             raise ExecutionLeaseError(f"failed to audit execution lease: {exc}") from exc
@@ -157,10 +168,11 @@ class ExecutionLeaseService:
 
     def complete(self, *, run_id: str, lease_id: str) -> ExecutionLease:
         with self._lock:
-            if self._sqlite_path:
-                current = self._sqlite_get_by_lease(run_id, lease_id)
-            else:
-                current = self._find_by_lease(run_id, lease_id)
+            current = (
+                self._sqlite_get_by_lease(run_id, lease_id)
+                if self._sqlite_path
+                else self._find_by_lease(run_id, lease_id)
+            )
             if current is None:
                 raise ExecutionLeaseError(f"unknown execution lease: {lease_id}")
             if current.status == "COMPLETED":
@@ -173,12 +185,27 @@ class ExecutionLeaseService:
             if self._sqlite_path:
                 try:
                     with sqlite3.connect(self._sqlite_path) as connection:
-                        connection.execute(
-                            "UPDATE execution_leases SET status = ?, timestamp = ? WHERE lease_id = ? AND run_id = ?",
-                            (completed.status, completed.timestamp, lease_id, run_id),
-                        )
+                        updated = connection.execute(
+                            "UPDATE execution_leases SET status = ?, timestamp = ? "
+                            "WHERE lease_id = ? AND run_id = ? AND status = 'RUNNING'",
+                            (
+                                completed.status,
+                                completed.timestamp,
+                                lease_id,
+                                run_id,
+                            ),
+                        ).rowcount
                 except sqlite3.Error as exc:
-                    raise ExecutionLeaseError(f"failed to complete durable execution lease: {exc}") from exc
+                    raise ExecutionLeaseError(
+                        f"failed to complete durable execution lease: {exc}"
+                    ) from exc
+                if updated != 1:
+                    refreshed = self._sqlite_get_by_lease(run_id, lease_id)
+                    if refreshed is not None and refreshed.status == "COMPLETED":
+                        return refreshed
+                    raise ExecutionLeaseError(
+                        "execution lease completion lost an update race"
+                    )
             self._audit_completion(completed)
             return completed
 
@@ -188,26 +215,38 @@ class ExecutionLeaseService:
                 return self._sqlite_get(run_id, idempotency_key)
             return self._find(run_id, idempotency_key)
 
-    def _sqlite_get(self, run_id: str, idempotency_key: str) -> ExecutionLease | None:
+    def _sqlite_get(
+        self, run_id: str, idempotency_key: str
+    ) -> ExecutionLease | None:
         try:
             with sqlite3.connect(self._sqlite_path) as connection:
                 row = connection.execute(
-                    "SELECT lease_id, run_id, worker_id, task_id, idempotency_key, execution_id, status, timestamp FROM execution_leases WHERE run_id = ? AND idempotency_key = ?",
+                    "SELECT lease_id, run_id, worker_id, task_id, idempotency_key, "
+                    "execution_id, status, timestamp FROM execution_leases "
+                    "WHERE run_id = ? AND idempotency_key = ?",
                     (run_id, idempotency_key),
                 ).fetchone()
         except sqlite3.Error as exc:
-            raise ExecutionLeaseError(f"failed to read durable execution lease: {exc}") from exc
+            raise ExecutionLeaseError(
+                f"failed to read durable execution lease: {exc}"
+            ) from exc
         return self._row_to_lease(row) if row else None
 
-    def _sqlite_get_by_lease(self, run_id: str, lease_id: str) -> ExecutionLease | None:
+    def _sqlite_get_by_lease(
+        self, run_id: str, lease_id: str
+    ) -> ExecutionLease | None:
         try:
             with sqlite3.connect(self._sqlite_path) as connection:
                 row = connection.execute(
-                    "SELECT lease_id, run_id, worker_id, task_id, idempotency_key, execution_id, status, timestamp FROM execution_leases WHERE run_id = ? AND lease_id = ?",
+                    "SELECT lease_id, run_id, worker_id, task_id, idempotency_key, "
+                    "execution_id, status, timestamp FROM execution_leases "
+                    "WHERE run_id = ? AND lease_id = ?",
                     (run_id, lease_id),
                 ).fetchone()
         except sqlite3.Error as exc:
-            raise ExecutionLeaseError(f"failed to read durable execution lease: {exc}") from exc
+            raise ExecutionLeaseError(
+                f"failed to read durable execution lease: {exc}"
+            ) from exc
         return self._row_to_lease(row) if row else None
 
     @staticmethod
@@ -224,7 +263,10 @@ class ExecutionLeaseService:
         self.sessions.add_message(
             lease.run_id,
             role="system",
-            content=f"Execution lease reserved for worker {lease.worker_id}, task {lease.task_id}",
+            content=(
+                f"Execution lease reserved for worker {lease.worker_id}, "
+                f"task {lease.task_id}"
+            ),
             metadata={
                 "phase": self.PHASE,
                 "lease_id": lease.lease_id,
@@ -257,7 +299,10 @@ class ExecutionLeaseService:
     def _find(self, run_id: str, idempotency_key: str) -> ExecutionLease | None:
         for message in reversed(self.sessions.snapshot(run_id).messages):
             metadata = message.metadata
-            if metadata.get("phase") != self.PHASE or metadata.get("idempotency_key") != idempotency_key:
+            if (
+                metadata.get("phase") != self.PHASE
+                or metadata.get("idempotency_key") != idempotency_key
+            ):
                 continue
             return self._from_metadata(run_id, metadata)
         return None
@@ -265,13 +310,18 @@ class ExecutionLeaseService:
     def _find_by_lease(self, run_id: str, lease_id: str) -> ExecutionLease | None:
         for message in reversed(self.sessions.snapshot(run_id).messages):
             metadata = message.metadata
-            if metadata.get("phase") != self.PHASE or metadata.get("lease_id") != lease_id:
+            if (
+                metadata.get("phase") != self.PHASE
+                or metadata.get("lease_id") != lease_id
+            ):
                 continue
             return self._from_metadata(run_id, metadata)
         return None
 
     @staticmethod
-    def _from_metadata(run_id: str, metadata: dict[str, object]) -> ExecutionLease:
+    def _from_metadata(
+        run_id: str, metadata: dict[str, object]
+    ) -> ExecutionLease:
         try:
             return ExecutionLease(
                 lease_id=str(metadata["lease_id"]),
@@ -284,4 +334,6 @@ class ExecutionLeaseService:
                 timestamp=str(metadata["timestamp"]),
             )
         except (KeyError, TypeError, ValueError) as exc:
-            raise ExecutionLeaseError("stored execution lease metadata is invalid") from exc
+            raise ExecutionLeaseError(
+                "stored execution lease metadata is invalid"
+            ) from exc
