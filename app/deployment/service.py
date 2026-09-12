@@ -42,9 +42,13 @@ class DockerComposeDeploymentAdapter:
         command = json.dumps(list(spec.command), ensure_ascii=False)
         working_directory = json.dumps(spec.working_directory, ensure_ascii=False)
         health_url = f"http://127.0.0.1:{spec.port}{spec.health_path}"
-        health_command = "python -c " + json.dumps(
-            "import urllib.request; urllib.request.urlopen(" + repr(health_url) + ")",
-            ensure_ascii=False,
+        health_python = (
+            "import urllib.request; urllib.request.urlopen("
+            f"{json.dumps(health_url, ensure_ascii=False)}, timeout=4)"
+        )
+        healthcheck = ", ".join(
+            json.dumps(item, ensure_ascii=False)
+            for item in ("CMD", "python", "-c", health_python)
         )
         compose = (
             "services:\n"
@@ -56,7 +60,7 @@ class DockerComposeDeploymentAdapter:
             f"    environment:\n{environment}\n"
             "    restart: unless-stopped\n"
             "    healthcheck:\n"
-            f"      test: [\"CMD-SHELL\", {json.dumps(health_command)}]\n"
+            f"      test: [{healthcheck}]\n"
             "      interval: 30s\n"
             "      timeout: 5s\n"
             "      retries: 3\n"
