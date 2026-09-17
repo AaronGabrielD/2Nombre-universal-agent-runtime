@@ -57,6 +57,19 @@ class ArchitectTests(unittest.TestCase):
         self.assertEqual(plan.workers[1].dependencies, ("w1",))
         self.assertEqual(provider.requests[0].model, "test-model")
         self.assertEqual(provider.requests[0].temperature, 0.2)
+        self.assertIn("Configured runtime worker limit: 4.", provider.requests[0].system_instruction)
+
+    def test_builds_prompt_with_configured_worker_limit(self):
+        provider = FakeProvider(
+            '{"plan_id":"p","objective":"X","workers":['
+            '{"worker_id":"w","role":"r","mission":"m"}]}'
+        )
+        architect = UniversalArchitect(provider, settings(max_workers=2))
+
+        architect.build_plan(ArchitectureInput(objective="X"))
+
+        self.assertIn("Configured runtime worker limit: 2.", provider.requests[0].system_instruction)
+        self.assertIn("Generate no more workers than this limit.", provider.requests[0].system_instruction)
 
     def test_accepts_markdown_fenced_json(self):
         provider = FakeProvider(
