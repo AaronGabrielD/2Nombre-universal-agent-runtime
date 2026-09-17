@@ -15,7 +15,7 @@ M00–M47 internal hardening and deployment preflight are integrated on `main` w
 - **M37–M39:** ✅ Durable execution leases, replay protection, local evidence reconciliation, and authoritative-backend reconciliation.
 - **M40–M45:** ✅ Explicit recovery actions, durable recovery audit trail, runtime recovery facade, Colab authoritative reconciliation, explicit persistence selection, and authenticated Chainlit recovery surface.
 - **M46:** ✅ Recovery state-machine integrity hardening and run-wide execution reconciliation.
-- **M47 — Deployment Preflight:** ✅ Production Chainlit container, non-root runtime image, durable `/data` defaults, canonical `.chainlit/config.toml`, container build/CLI validation in CI, and cloud-smoke contract alignment.
+- **M47 — Deployment Preflight:** ✅ Production Chainlit container, non-root runtime image, durable `/data` defaults, canonical `.chainlit/config.toml`, container startup/health smoke validation in CI, cloud-smoke contract alignment, dynamic Architect worker-limit prompting, Docker CLI support, and optional CrewAI fallback.
 
 ## Architecture
 
@@ -28,7 +28,7 @@ User / Chainlit
   -> Architect
   -> Gate A
   -> Worker Factory / Dispatcher
-  -> CrewAI Worker Adapter
+  -> CrewAI Worker Adapter | Gemini Worker Adapter fallback
   -> Tool Registry + Authorization
       -> Gate C when required
   -> Execution Gateway
@@ -57,9 +57,9 @@ The repository contains a production-oriented Chainlit image:
 docker build -t universal-agent-runtime:local .
 ```
 
-The container runs Chainlit as the dedicated non-root `uar` user and stores durable session/identity SQLite state under `/data` by default. See `docs/DEPLOYMENT_DOCKER.md` for deployment requirements and secret handling.
+The container runs Chainlit as the dedicated non-root `uar` user and stores durable session/identity SQLite state under `/data` by default. The image includes the Docker CLI only; it does not include a Docker daemon. See `docs/DEPLOYMENT_DOCKER.md` for deployment requirements, host Docker socket handling, and secret management.
 
-The image is the presentation/runtime host. It does not install Docker-in-Docker or grant itself access to a host Docker socket. When `EXECUTION_BACKEND=docker`, the deployment environment must provide the Docker execution boundary separately; when `EXECUTION_BACKEND=colab`, configure the authenticated remote execution gateway.
+The image is the presentation/runtime host. When `EXECUTION_BACKEND=docker`, the deployment environment must provide the Docker daemon and connectivity to it; when `EXECUTION_BACKEND=colab`, configure the authenticated remote execution gateway.
 
 ## Chainlit configuration
 
@@ -87,13 +87,13 @@ Configure `UAR_SMOKE_BASE_URL` and `RUNTIME_EXECUTION_TOKEN` without committing 
 
 ## CrewAI integration
 
-Install the optional CrewAI integration with:
+CrewAI remains optional. Install it with:
 
 ```bash
 pip install -r requirements-crewai.txt
 ```
 
-CrewAI remains a worker-planning adapter; execution and human approval stay behind the runtime's authoritative boundaries.
+When CrewAI is unavailable, the runtime falls back to the native Gemini worker adapter. CrewAI and Gemini worker planning remain adapters behind the runtime's own contracts; execution and human approval stay behind the runtime's authoritative boundaries.
 
 ## Security rule
 
