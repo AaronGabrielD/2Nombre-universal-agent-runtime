@@ -6,10 +6,12 @@ of constructing providers, gateways, or authorization services themselves.
 """
 from __future__ import annotations
 
+import importlib.util
 import os
 from dataclasses import dataclass
 
 from app.agents.crewai_adapter import CrewAIWorkerAdapter
+from app.agents.gemini_worker_adapter import GeminiWorkerAdapter
 from app.approval.service import HumanApprovalEngine
 from app.architect.service import UniversalArchitect
 from app.core.config import Settings, get_settings
@@ -90,6 +92,13 @@ def _env_int(name: str, default: int, *, minimum: int) -> int:
     return value
 
 
+def _build_worker_agent(settings: Settings):
+    """Prefer CrewAI when installed; otherwise use the native Gemini adapter."""
+    if importlib.util.find_spec("crewai") is not None:
+        return CrewAIWorkerAdapter(settings)
+    return GeminiWorkerAdapter(settings)
+
+
 def build_runtime(
     settings: Settings | None = None,
     *,
@@ -157,7 +166,11 @@ def build_runtime(
             )
         )
     gateway = ExecutionGateway(backends=tuple(backends), settings=settings)
-    worker_runtime = WorkerRuntimeAdapter(gateway=gateway, session_manager=sessions, settings=settings)
+    worker_runtime = WorkerRuntimeAdapter(
+        gateway=gateway,
+        session_manager=sessions,
+        settings=settings,
+    )
 
     registry = tool_registry or ToolRegistry()
     tool_authorization = ToolAuthorizationService(
@@ -171,7 +184,7 @@ def build_runtime(
         worker_factory=WorkerFactory(),
         worker_dispatcher=WorkerDispatcher(),
         worker_runtime=worker_runtime,
-        worker_agent=CrewAIWorkerAdapter(settings),
+        worker_agent=_build_worker_agent(settings),
         supervisor=SupervisorService(),
         tool_authorization=tool_authorization,
         settings=settings,
