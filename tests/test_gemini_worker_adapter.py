@@ -1,11 +1,10 @@
 import unittest
-from unittest.mock import patch
 
 from app.agents.gemini_worker_adapter import GeminiWorkerAdapter, GeminiWorkerAdapterError
 from app.core.config import Settings
+from app.core.contracts import TaskSpec
 from app.llm.interfaces import GenerationResponse
 from app.workers.models import WorkerInstance
-from app.core.contracts import TaskSpec
 
 
 class FakeProvider:
@@ -40,10 +39,13 @@ def settings():
 def worker():
     return WorkerInstance(
         worker_id="worker-1",
-        run_id="run-1",
         role="builder",
         mission="build a small program",
-        status="ready",
+        deliverables=("program",),
+        required_tools=(),
+        dependencies=(),
+        can_request_human_input=True,
+        run_id="run-1",
     )
 
 
