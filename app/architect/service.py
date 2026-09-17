@@ -47,8 +47,8 @@ Schema:
 
 Planning rules:
 - Keep the design domain-agnostic and grounded in the supplied objective and inputs.
-- Prefer 3 workers when there is meaningful parallel work; use fewer only when the work is inherently sequential.
-- Never exceed the configured worker limit.
+- Prefer parallel workers only when they add real value.
+- Never exceed the configured runtime worker limit supplied below.
 - Worker IDs must be unique and dependencies must reference existing worker IDs.
 - Required tools/capabilities are declarations only; availability is decided elsewhere.
 - Make acceptance criteria concrete and testable.
@@ -67,11 +67,16 @@ class UniversalArchitect:
     def build_plan(self, request: ArchitectureInput) -> ArchitecturePlan:
         request.validate()
         payload = json.dumps(request.to_prompt_payload(), ensure_ascii=False, default=str)
+        system_instruction = (
+            _SYSTEM_PROMPT
+            + f"\nConfigured runtime worker limit: {self._settings.max_workers}."
+            + " Generate no more workers than this limit."
+        )
         generation = self._provider.generate(
             GenerationRequest(
                 model=self._settings.gemini_model_architect,
                 contents=payload,
-                system_instruction=_SYSTEM_PROMPT,
+                system_instruction=system_instruction,
                 temperature=min(self._settings.gemini_temperature, 0.2),
                 metadata={"component": "universal_architect"},
             )
