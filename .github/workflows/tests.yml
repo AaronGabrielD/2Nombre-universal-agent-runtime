@@ -48,3 +48,26 @@ jobs:
 
       - name: Verify container CLI
         run: docker run --rm universal-agent-runtime:ci chainlit --version
+
+      - name: Start production container
+        run: |
+          docker run -d --name uar-ci \
+            -p 18000:8000 \
+            -e CHAINLIT_AUTH_SECRET=ci-chainlit-secret-2026 \
+            -e UAR_EXECUTION_AUTH_SECRET=uar-ci-execution-secret-2026-0123456789abcdef \
+            universal-agent-runtime:ci
+
+      - name: Verify runtime health
+        run: |
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent --show-error http://127.0.0.1:18000/health; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs uar-ci
+          exit 1
+
+      - name: Stop production container
+        if: always()
+        run: docker rm -f uar-ci || true
