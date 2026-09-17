@@ -1,6 +1,7 @@
 """Optional Docker execution backend with defense-in-depth isolation."""
 from __future__ import annotations
 
+import os
 import shutil
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -112,11 +113,26 @@ class DockerExecutionBackend(ExecutionBackend):
             script = root / "main.py"
             script.write_text(request.code, encoding="utf-8")
             command = self._docker_command(request, root)
+            docker_path = shutil.which(self.docker_binary)
+            if docker_path is None:
+                return self._result(
+                    request,
+                    ExecutionStatus.UNAVAILABLE,
+                    "",
+                    "docker executable is unavailable",
+                    None,
+                    started,
+                )
+            docker_dir = str(Path(docker_path).resolve().parent)
+            inherited_path = os.environ.get("PATH", "")
+            process_path = os.pathsep.join(
+                item for item in (docker_dir, inherited_path) if item
+            )
             try:
                 completed = run_bounded_process(
                     command,
                     cwd=root,
-                    env={"PATH": shutil.which(self.docker_binary) or "", "HOME": "/tmp"},
+                    env={"PATH": process_path, "HOME": "/tmp"},
                     timeout=request.timeout_seconds,
                     max_output_bytes=self.max_output_bytes,
                 )
