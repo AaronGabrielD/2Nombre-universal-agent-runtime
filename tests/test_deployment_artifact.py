@@ -9,10 +9,14 @@ class DeploymentArtifactTests(unittest.TestCase):
     def test_dockerfile_exists_and_runs_chainlit_non_root(self):
         dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
         self.assertIn("FROM python:3.12-slim", dockerfile)
+        self.assertIn("FROM docker:29.8.0-cli AS docker-cli", dockerfile)
+        self.assertIn("COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker", dockerfile)
+        self.assertIn("PYTHONPATH=/app", dockerfile)
         self.assertIn("USER uar", dockerfile)
         self.assertIn('CMD ["chainlit", "run", "app/ui/chainlit_app.py", "--host", "0.0.0.0", "--port", "8000"]', dockerfile)
         self.assertIn("UAR_SESSION_REPOSITORY_PATH=/data/runtime_sessions.db", dockerfile)
         self.assertIn("UAR_IDENTITY_DB_PATH=/data/runtime_users.db", dockerfile)
+        self.assertIn("HEALTHCHECK", dockerfile)
 
     def test_dockerignore_excludes_runtime_secrets_and_databases(self):
         dockerignore = (ROOT / ".dockerignore").read_text(encoding="utf-8")
